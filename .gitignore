@@ -1,0 +1,15 @@
+# Local deployment secrets
+firmware/main/wifi_time_config.h
+firmware/main/cloud_config.h
+
+# ESP-IDF generated files
+firmware/build/
+firmware/.cache/
+firmware/managed_components/
+firmware/sdkconfig.old
+
+# Editor and OS metadata
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

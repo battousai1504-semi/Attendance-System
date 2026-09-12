@@ -1,0 +1,8 @@
+#pragma once
+
+/* Copy to cloud_config.h and fill in values from the GAS deployment. */
+#define CDP_GAS_URL   "https://script.google.com/macros/s/YOUR_DEPLOYMENT_ID/exec"
+#define CDP_GAS_TOKEN "replace-with-a-long-random-token"
+#define CDP_DEVICE_ID "robot-01"
+#define CDP_ENROLL_AP_SSID     "RobotEnroll"
+#define CDP_ENROLL_AP_PASSWORD "replace-with-at-least-8-characters"
