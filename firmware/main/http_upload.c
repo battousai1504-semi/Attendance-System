@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <string.h>
+#include <strings.h>
 #include <unistd.h>
 
 #include "esp_http_client.h"
@@ -15,6 +16,7 @@
 #define TAG                       "http_upload"
 #define UPLOAD_RETRY              3
 #define UPLOAD_RETRY_PAUSE_MS     30000
+#define UPLOAD_HTTP_TIMEOUT_MS    30000
 #define UPLOAD_TASK_STACK         7168
 #define UPLOAD_TASK_PRIO          4
 #define OUTBOX_FILE               "/spiffs/upload_outbox.bin"
@@ -40,9 +42,21 @@ typedef struct {
 } json_writer_t;
 
 typedef struct {
-    char data[192];
+    char data[512];
     size_t length;
+    int status_code;
+    unsigned redirect_count;
+    bool is_json;
+    bool truncated;
+    bool redirect_rejected;
+    char redirect_location[384];
 } response_capture_t;
+
+typedef enum {
+    UPLOAD_ACCEPTED,
+    UPLOAD_RETRYABLE,
+    UPLOAD_DEFERRED,
+} upload_result_t;
 
 static QueueHandle_t s_wake_queue;
 static SemaphoreHandle_t s_outbox_mutex;
@@ -335,11 +349,67 @@ done:
     return result;
 }
 
+static bool is_allowed_redirect(const char *url)
+{
+    static const char expected[] = "https://script.googleusercontent.com/";
+    return url != NULL && strncmp(url, expected, sizeof(expected) - 1) == 0;
+}
+
 static esp_err_t http_event_handler(esp_http_client_event_t *event)
 {
-    if (event->event_id == HTTP_EVENT_ON_DATA && event->user_data != NULL &&
-        event->data != NULL && event->data_len > 0) {
-        response_capture_t *capture = (response_capture_t *)event->user_data;
+    response_capture_t *capture = (response_capture_t *)event->user_data;
+    if (capture == NULL) return ESP_OK;
+
+    switch (event->event_id) {
+    case HTTP_EVENT_ON_STATUS_CODE:
+        capture->length = 0;
+        capture->data[0] = '\0';
+        capture->is_json = false;
+        capture->truncated = false;
+        capture->redirect_location[0] = '\0';
+        capture->status_code = esp_http_client_get_status_code(event->client);
+        break;
+
+    case HTTP_EVENT_ON_HEADER:
+        if (event->header_key == NULL || event->header_value == NULL) break;
+        if (strcasecmp(event->header_key, "Content-Type") == 0) {
+            const char *value = event->header_value;
+            while (*value == ' ' || *value == '\t') value++;
+            capture->is_json = strncasecmp(value, "application/json", 16) == 0;
+        } else if (strcasecmp(event->header_key, "Location") == 0) {
+            snprintf(capture->redirect_location, sizeof(capture->redirect_location),
+                     "%s", event->header_value);
+        }
+        break;
+
+    case HTTP_EVENT_REDIRECT: {
+        capture->redirect_count++;
+        const int status = esp_http_client_get_status_code(event->client);
+        if (!is_allowed_redirect(capture->redirect_location)) {
+            capture->redirect_rejected = true;
+            ESP_LOGE(TAG, "Rejected redirect target (HTTP %d); deploy the Web App for anonymous access",
+                     status);
+            break;
+        }
+
+        esp_err_t error = ESP_OK;
+        if (status == 301 || status == 302 || status == 303) {
+            error = esp_http_client_set_method(event->client, HTTP_METHOD_GET);
+            if (error == ESP_OK) {
+                error = esp_http_client_set_post_field(event->client, NULL, 0);
+            }
+        }
+        if (error == ESP_OK) error = esp_http_client_set_redirection(event->client);
+        if (error != ESP_OK) {
+            capture->redirect_rejected = true;
+            ESP_LOGE(TAG, "Could not follow HTTP %d redirect: %s",
+                     status, esp_err_to_name(error));
+        }
+        break;
+    }
+
+    case HTTP_EVENT_ON_DATA:
+        if (event->data == NULL || event->data_len <= 0) break;
         size_t available = sizeof(capture->data) - capture->length - 1;
         size_t copy_length = (size_t)event->data_len < available ?
                              (size_t)event->data_len : available;
@@ -348,24 +418,41 @@ static esp_err_t http_event_handler(esp_http_client_event_t *event)
             capture->length += copy_length;
             capture->data[capture->length] = '\0';
         }
+        if (copy_length < (size_t)event->data_len) capture->truncated = true;
+        break;
+
+    default:
+        break;
     }
     return ESP_OK;
 }
 
-static bool do_upload(const upload_record_t *record)
+static bool response_accepts_event(const response_capture_t *response,
+                                   const char *event_id)
+{
+    char event_match[HTTP_UPLOAD_EVENT_ID_MAX + 16];
+    const int written = snprintf(event_match, sizeof(event_match),
+                                 "\"event_id\":\"%s\"", event_id);
+    return written > 0 && (size_t)written < sizeof(event_match) &&
+           response->is_json && !response->truncated &&
+           strstr(response->data, "\"ok\":true") != NULL &&
+           strstr(response->data, event_match) != NULL;
+}
+
+static upload_result_t do_upload(const upload_record_t *record)
 {
     char json[JSON_BUFFER_SIZE];
     if (!build_json(record, json, sizeof(json))) {
         ESP_LOGE(TAG, "JSON build failed for event=%s", record->event_id);
-        return false;
+        return UPLOAD_DEFERRED;
     }
 
     response_capture_t response = {0};
     esp_http_client_config_t config = {
         .url = s_gas_url,
         .method = HTTP_METHOD_POST,
-        .timeout_ms = 10000,
-        .disable_auto_redirect = false,
+        .timeout_ms = UPLOAD_HTTP_TIMEOUT_MS,
+        .disable_auto_redirect = true,
         .max_redirection_count = 5,
         .cert_pem = (const char *)cdp_ca_bundle_pem_start,
         .cert_len = (size_t)(cdp_ca_bundle_pem_end - cdp_ca_bundle_pem_start),
@@ -373,7 +460,7 @@ static bool do_upload(const upload_record_t *record)
         .user_data = &response,
     };
     esp_http_client_handle_t client = esp_http_client_init(&config);
-    if (client == NULL) return false;
+    if (client == NULL) return UPLOAD_RETRYABLE;
 
     esp_http_client_set_header(client, "Content-Type", "application/json");
     esp_http_client_set_post_field(client, json, strlen(json));
@@ -381,14 +468,23 @@ static bool do_upload(const upload_record_t *record)
     esp_err_t error = esp_http_client_perform(client);
     int status = esp_http_client_get_status_code(client);
     esp_http_client_cleanup(client);
-    const bool accepted = strstr(response.data, "\"ok\":true") != NULL;
-    if (error != ESP_OK || status < 200 || status >= 300 || !accepted) {
-        ESP_LOGW(TAG, "Upload failed: event=%s err=%s status=%d response='%s'",
-                 record->event_id, esp_err_to_name(error), status, response.data);
-        return false;
+    if (error == ESP_OK && status >= 200 && status < 300 &&
+        response_accepts_event(&response, record->event_id)) {
+        ESP_LOGI(TAG, "Uploaded event=%s student_id=%u redirects=%u",
+                 record->event_id, record->student_id, response.redirect_count);
+        return UPLOAD_ACCEPTED;
     }
-    ESP_LOGI(TAG, "Uploaded event=%s student_id=%u", record->event_id, record->student_id);
-    return true;
+
+    ESP_LOGW(TAG,
+             "Upload failed: event=%s err=%s status=%d redirects=%u json=%d truncated=%d response='%.160s'",
+             record->event_id, esp_err_to_name(error), status, response.redirect_count,
+             response.is_json, response.truncated, response.data);
+    if (response.redirect_rejected) return UPLOAD_DEFERRED;
+    if (error != ESP_OK || status == 408 || status == 429 || status >= 500 ||
+        strstr(response.data, "\"retryable\":true") != NULL) {
+        return UPLOAD_RETRYABLE;
+    }
+    return UPLOAD_DEFERRED;
 }
 
 static void upload_task(void *arg)
@@ -411,12 +507,13 @@ static void upload_task(void *arg)
             clock_wait_logged = false;
         }
         while (outbox_peek(&record)) {
-            bool uploaded = false;
-            for (int attempt = 0; attempt < UPLOAD_RETRY && !uploaded; attempt++) {
+            upload_result_t result = UPLOAD_RETRYABLE;
+            for (int attempt = 0; attempt < UPLOAD_RETRY &&
+                                  result == UPLOAD_RETRYABLE; attempt++) {
                 if (attempt > 0) vTaskDelay(pdMS_TO_TICKS(2000 * attempt));
-                uploaded = do_upload(&record);
+                result = do_upload(&record);
             }
-            if (!uploaded) break;
+            if (result != UPLOAD_ACCEPTED) break;
             if (outbox_remove_first(record.event_id) != ESP_OK) {
                 ESP_LOGE(TAG, "Could not acknowledge event=%s", record.event_id);
                 break;
@@ -429,14 +526,16 @@ static void upload_task(void *arg)
 esp_err_t http_upload_init(const char *gas_url, const char *api_token)
 {
     if (s_initialized) return ESP_OK;
-    if (gas_url == NULL || gas_url[0] == '\0' || strlen(gas_url) >= sizeof(s_gas_url)) {
+    if (gas_url == NULL || strncmp(gas_url, "https://", 8) != 0 ||
+        strlen(gas_url) >= sizeof(s_gas_url)) {
         return ESP_ERR_INVALID_ARG;
     }
-    if (api_token != NULL && strlen(api_token) >= sizeof(s_api_token)) {
+    if (api_token == NULL || strlen(api_token) < 32 ||
+        strlen(api_token) >= sizeof(s_api_token)) {
         return ESP_ERR_INVALID_ARG;
     }
     snprintf(s_gas_url, sizeof(s_gas_url), "%s", gas_url);
-    snprintf(s_api_token, sizeof(s_api_token), "%s", api_token == NULL ? "" : api_token);
+    snprintf(s_api_token, sizeof(s_api_token), "%s", api_token);
 
     s_outbox_mutex = xSemaphoreCreateMutex();
     s_wake_queue = xQueueCreate(1, sizeof(uint8_t));
@@ -471,19 +570,32 @@ esp_err_t http_upload_init(const char *gas_url, const char *api_token)
     return ESP_OK;
 }
 
-esp_err_t http_upload_push(const upload_record_t *record)
+esp_err_t http_upload_stage(const upload_record_t *record)
 {
-    if (!s_initialized || record == NULL || record->event_id[0] == '\0') {
-        return ESP_ERR_INVALID_STATE;
+    if (!s_initialized) return ESP_ERR_INVALID_STATE;
+    if (record == NULL || record->event_id[0] == '\0' ||
+        record->device_id[0] == '\0' || record->student_id == 0 ||
+        record->name[0] == '\0' || record->timestamp[0] == '\0' ||
+        record->confidence_milli < 0 || record->confidence_milli > 1000 ||
+        memchr(record->event_id, '\0', sizeof(record->event_id)) == NULL ||
+        memchr(record->device_id, '\0', sizeof(record->device_id)) == NULL ||
+        memchr(record->name, '\0', sizeof(record->name)) == NULL ||
+        memchr(record->class_name, '\0', sizeof(record->class_name)) == NULL ||
+        memchr(record->timestamp, '\0', sizeof(record->timestamp)) == NULL) {
+        return ESP_ERR_INVALID_ARG;
     }
     esp_err_t result = outbox_append(record);
-    if (result == ESP_OK) {
-        uint8_t signal = 1;
-        xQueueOverwrite(s_wake_queue, &signal);
-    } else {
+    if (result != ESP_OK) {
         ESP_LOGE(TAG, "Could not persist upload event=%s", record->event_id);
     }
     return result;
+}
+
+void http_upload_notify(void)
+{
+    if (!s_initialized || s_wake_queue == NULL) return;
+    uint8_t signal = 1;
+    xQueueOverwrite(s_wake_queue, &signal);
 }
 
 int http_upload_pending_count(void)

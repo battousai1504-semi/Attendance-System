@@ -35,10 +35,16 @@ if (NOT CONFIG_HUMAN_FACE_FEAT_MODEL_IN_SDCARD)
     endif()
 
     set(pack_model_exe ${espdl_dir}/fbs_loader/pack_espdl_models.py)
+    if(DEFINED PYTHON AND NOT "${PYTHON}" STREQUAL "")
+        set(cdp_python "${PYTHON}")
+    else()
+        find_package(Python3 REQUIRED COMPONENTS Interpreter)
+        set(cdp_python "${Python3_EXECUTABLE}")
+    endif()
     add_custom_command(
         OUTPUT ${packed_model}
         COMMENT "Move and Pack models..."
-        COMMAND "$ENV{IDF_PYTHON_ENV_PATH}/Scripts/python.exe" ${pack_model_exe} --model_path ${models} --out_file ${packed_model}
+        COMMAND "${cdp_python}" ${pack_model_exe} --model_path ${models} --out_file ${packed_model}
         DEPENDS ${models}
         VERBATIM)
 

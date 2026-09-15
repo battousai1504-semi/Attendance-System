@@ -7,8 +7,6 @@
  * Record chỉ bị xóa khỏi outbox sau khi server trả về {"ok":true}.
  */
 
-#pragma once
-
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -34,10 +32,14 @@ typedef struct {
 esp_err_t http_upload_init(const char *gas_url, const char *api_token);
 
 /**
- * Ghi bền vững một bản ghi vào outbox và đánh thức task upload.
+ * Ghi bền vững một bản ghi vào outbox nhưng chưa đánh thức task upload.
+ * Caller phải hoàn tất bản sao local rồi mới gọi http_upload_notify().
  * @return ESP_OK nếu đã lưu, ESP_ERR_NO_MEM nếu outbox đầy
  */
-esp_err_t http_upload_push(const upload_record_t *record);
+esp_err_t http_upload_stage(const upload_record_t *record);
+
+/** Đánh thức task upload sau khi transaction local đã hoàn tất. */
+void http_upload_notify(void);
 
 /**
  * Kiểm tra số lượng bản ghi đang chờ upload.

@@ -3,11 +3,12 @@
 /*
  * =========================================================
  *  board_pins.h — Robot Điểm Danh
- *  PIN_CONFIG = 2: Generic ESP32-S3 N16R8 CAM
+ *  Board: ESP32-S3-WROOM N16R8 camera board (Freenove-style clone)
+ *  The camera is connected internally through the board FPC connector.
  * =========================================================
  */
 
-/* ---- Camera OV2640 (đã xác nhận hoạt động) ---- */
+/* ---- Internal camera bus (ESP32S3_EYE/Freenove-compatible routing) ---- */
 #define CAM_PIN_PWDN    -1
 #define CAM_PIN_RESET   -1
 #define CAM_PIN_XCLK    15
@@ -25,8 +26,14 @@
 #define CAM_PIN_HREF     7
 #define CAM_PIN_PCLK    13
 
-/* ---- LED trạng thái (GPIO built-in thường là 48 trên N16R8) ---- */
-#define STATUS_LED_GPIO  48
+/* GPIO2 drives the plain onboard indicator marked IO2. GPIO48 drives the
+ * onboard WS2812 and must not be toggled as a conventional GPIO LED. */
+#define STATUS_LED_GPIO  2
+
+/* Hold the board BOOT button while the firmware starts to reopen enrollment. */
+#define ENROLL_BUTTON_GPIO         0
+#define ENROLL_BUTTON_ACTIVE_LEVEL 0
+#define ENROLL_BUTTON_HOLD_MS      2500
 
 /* ---- Không có phần cứng thêm trong giai đoạn này ---- */
 /* Loa, LCD, PIR, vân tay sẽ thêm sau (Phase 3) */

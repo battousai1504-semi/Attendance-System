@@ -5,12 +5,10 @@
  *
  * Lưu trong NVS (Non-Volatile Storage):
  *   namespace "student_db"
- *   key "s<id>" → JSON: {"name":"Nguyen Van A","class":"10A1"}
+ *   key "s<id>" → compact UTF-8 string "name|class"
  *
  * Hỗ trợ tối đa 50 học sinh (đủ cho 1 lớp học).
  */
-
-#pragma once
 
 #include <stdbool.h>
 #include <stdint.h>

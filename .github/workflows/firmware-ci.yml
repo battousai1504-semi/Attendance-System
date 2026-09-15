@@ -1,0 +1,48 @@
+name: Firmware CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: firmware-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  host-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Run host-side persistence tests
+        run: bash tests/host/run_tests.sh
+
+      - name: Run Google Apps Script contract tests
+        run: node tests/apps_script/test_code.js
+
+  build:
+    runs-on: ubuntu-latest
+    container: espressif/idf:v6.0.2
+    defaults:
+      run:
+        working-directory: firmware
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Create CI-only deployment configuration
+        run: |
+          cp main/wifi_time_config.h.example main/wifi_time_config.h
+          cp main/cloud_config.h.example main/cloud_config.h
+
+      - name: Build ESP32-S3 firmware
+        run: idf.py build
+
+      - name: Upload firmware binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: robot-attendance-${{ github.sha }}
+          path: firmware/build/robot_attendance.bin
+          if-no-files-found: error

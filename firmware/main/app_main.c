@@ -21,6 +21,7 @@
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_netif.h"
+#include "esp_partition.h"
 #include "esp_spiffs.h"
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
@@ -48,7 +49,7 @@
 
 /* Thời gian chờ WiFi kết nối và NTP đặt đồng hồ hệ thống (ms). */
 #define NETWORK_TIME_READY_TIMEOUT_MS  30000
-#define FIRMWARE_VERSION                "1.2-phase1"
+#define FIRMWARE_VERSION                "1.2.1-phase1-rc1"
 
 static const char *TAG = "app_main";
 static bool s_upload_enabled;
@@ -77,6 +78,60 @@ static void led_blink(int times, int delay_ms)
         led_set(false);
         vTaskDelay(pdMS_TO_TICKS(delay_ms));
     }
+}
+
+static bool enrollment_button_held(void)
+{
+    gpio_config_t cfg = {
+        .pin_bit_mask = (1ULL << ENROLL_BUTTON_GPIO),
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+    };
+    if (gpio_config(&cfg) != ESP_OK ||
+        gpio_get_level(ENROLL_BUTTON_GPIO) != ENROLL_BUTTON_ACTIVE_LEVEL) {
+        return false;
+    }
+
+    ESP_LOGI(TAG, "BOOT button detected; keep holding to enter enrollment");
+    for (int elapsed = 0; elapsed < ENROLL_BUTTON_HOLD_MS; elapsed += 50) {
+        if (gpio_get_level(ENROLL_BUTTON_GPIO) != ENROLL_BUTTON_ACTIVE_LEVEL) {
+            ESP_LOGI(TAG, "BOOT button released before enrollment threshold");
+            return false;
+        }
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+    ESP_LOGW(TAG, "Maintenance enrollment requested with BOOT button");
+    return true;
+}
+
+static void fatal_error_loop(const char *reason)
+{
+    ESP_LOGE(TAG, "FATAL: %s; device stopped in safe mode", reason);
+    while (true) {
+        led_blink(5, 150);
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+}
+
+static bool cloud_config_valid(void)
+{
+    if (strncmp(CDP_GAS_URL, "https://script.google.com/macros/s/", 35) != 0 ||
+        strstr(CDP_GAS_URL, "YOUR_DEPLOYMENT_ID") != NULL ||
+        strstr(CDP_GAS_URL, "/exec") == NULL || strlen(CDP_GAS_TOKEN) < 32 ||
+        strstr(CDP_GAS_TOKEN, "replace-with") != NULL ||
+        CDP_DEVICE_ID[0] == '\0') {
+        return false;
+    }
+    for (const unsigned char *p = (const unsigned char *)CDP_DEVICE_ID;
+         *p != '\0'; p++) {
+        const bool allowed = (*p >= 'a' && *p <= 'z') ||
+                             (*p >= 'A' && *p <= 'Z') ||
+                             (*p >= '0' && *p <= '9') || *p == '.' ||
+                             *p == '_' || *p == ':' || *p == '-';
+        if (!allowed) return false;
+    }
+    return true;
 }
 
 /* ─── Khởi tạo Camera ────────────────────────────────────────── */
@@ -120,19 +175,55 @@ static esp_err_t init_camera(void)
 }
 
 /* ─── Khởi tạo SPIFFS ────────────────────────────────────────── */
+static bool spiffs_partition_is_erased(void)
+{
+    const esp_partition_t *partition = esp_partition_find_first(
+        ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_SPIFFS, "faces");
+    if (partition == NULL) return false;
+
+    uint8_t buffer[256];
+    for (size_t offset = 0; offset < partition->size; offset += sizeof(buffer)) {
+        size_t length = partition->size - offset;
+        if (length > sizeof(buffer)) length = sizeof(buffer);
+        if (esp_partition_read(partition, offset, buffer, length) != ESP_OK) {
+            return false;
+        }
+        for (size_t index = 0; index < length; index++) {
+            if (buffer[index] != 0xff) return false;
+        }
+    }
+    return true;
+}
+
 static esp_err_t init_spiffs(void)
 {
+    const bool first_boot = spiffs_partition_is_erased();
     esp_vfs_spiffs_conf_t spiffs_conf = {
         .base_path              = FACE_DB_PATH,
         .partition_label        = "faces",  /* tên trong partitions.csv */
         .max_files              = 10,
-        .format_if_mount_failed = true,
+        /* A blank factory partition may be formatted once. A non-blank
+         * filesystem that fails to mount is never erased automatically. */
+        .format_if_mount_failed = first_boot,
     };
+    if (first_boot) ESP_LOGI(TAG, "Blank SPIFFS partition detected; first-boot format allowed");
     esp_err_t err = esp_vfs_spiffs_register(&spiffs_conf);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "SPIFFS mount failed: %s", esp_err_to_name(err));
     } else {
-        ESP_LOGI(TAG, "SPIFFS mounted at %s", FACE_DB_PATH);
+        size_t total = 0;
+        size_t used = 0;
+        esp_err_t info_err = esp_spiffs_info("faces", &total, &used);
+        if (info_err == ESP_OK) {
+            ESP_LOGI(TAG, "SPIFFS mounted at %s: %u/%u bytes used",
+                     FACE_DB_PATH, (unsigned)used, (unsigned)total);
+            if (total > used && total - used < 128 * 1024) {
+                ESP_LOGW(TAG, "SPIFFS free space is below 128 KiB");
+            }
+        } else {
+            ESP_LOGW(TAG, "SPIFFS mounted but usage query failed: %s",
+                     esp_err_to_name(info_err));
+        }
     }
     return err;
 }
@@ -141,24 +232,21 @@ static esp_err_t init_spiffs(void)
 static void on_recognized(const face_engine_result_t *result)
 {
     student_info_t student;
-    const char *name       = "Unknown";
-    const char *class_name = "";
-
-    if (student_db_get((uint16_t)result->id, &student) == ESP_OK) {
-        name       = student.name;
-        class_name = student.class_name;
+    if (student_db_get((uint16_t)result->id, &student) != ESP_OK) {
+        ESP_LOGE(TAG, "Recognized face ID=%d has no student metadata; event rejected",
+                 result->id);
+        led_blink(4, 200);
+        return;
     }
+    const char *name = student.name;
+    const char *class_name = student.class_name;
 
-    /* Ghi vào SPIFFS (CSV local) */
+    /* Prepare first, then persist to the outbox before accepting the event. */
     attendance_entry_t entry = {0};
-    attendance_result_t att = attendance_record((uint16_t)result->id, "FACE", &entry);
+    attendance_result_t att = attendance_prepare((uint16_t)result->id, "FACE", &entry);
 
     if (att == ATTENDANCE_RECORDED) {
-        led_blink(2, 150);   /* 2 nháy nhanh = thành công */
-        ESP_LOGI(TAG, "✅ ĐIỂM DANH: %s (%s) conf=%d‰",
-                 name, class_name, result->similarity_milli);
-
-        /* Đẩy vào queue upload lên Google Sheets */
+        bool upload_staged = false;
         if (s_upload_enabled) {
             upload_record_t rec = {0};
             rec.student_id       = (uint16_t)result->id;
@@ -168,12 +256,28 @@ static void on_recognized(const face_engine_result_t *result)
             snprintf(rec.name, sizeof(rec.name), "%s", name);
             snprintf(rec.class_name, sizeof(rec.class_name), "%s", class_name);
             snprintf(rec.timestamp, sizeof(rec.timestamp), "%s", entry.timestamp);
-            esp_err_t upload_err = http_upload_push(&rec);
+            esp_err_t upload_err = http_upload_stage(&rec);
             if (upload_err != ESP_OK) {
-                ESP_LOGE(TAG, "Không thể lưu record vào upload outbox: %s",
+                ESP_LOGE(TAG, "Attendance rejected: cannot persist upload outbox: %s",
                          esp_err_to_name(upload_err));
+                led_blink(4, 200);
+                return;
             }
+            upload_staged = true;
         }
+
+        esp_err_t commit_err = attendance_commit(&entry, upload_staged);
+        if (commit_err != ESP_OK) {
+            ESP_LOGE(TAG, "Attendance rejected: local persistence failed: %s",
+                     esp_err_to_name(commit_err));
+            led_blink(4, 200);
+            return;
+        }
+        if (upload_staged) http_upload_notify();
+
+        led_blink(2, 150);   /* 2 nháy nhanh = thành công */
+        ESP_LOGI(TAG, "✅ ĐIỂM DANH: %s (%s) conf=%d‰",
+                 name, class_name, result->similarity_milli);
 
     } else if (att == ATTENDANCE_DUPLICATE) {
         led_blink(1, 100);   /* 1 nháy = duplicate */
@@ -231,15 +335,19 @@ void app_main(void)
     ESP_LOGI(TAG, "=== Robot Điểm Danh %s ===", FIRMWARE_VERSION);
     manual_clock_init();
     led_init();
+    const bool maintenance_enrollment = enrollment_button_held();
     led_blink(3, 100);   /* 3 nháy nhanh khi boot */
 
     /* NVS (cần cho WiFi và student_db) */
     esp_err_t nvs_ret = nvs_flash_init();
     if (nvs_ret == ESP_ERR_NVS_NO_FREE_PAGES || nvs_ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        ESP_ERROR_CHECK(nvs_flash_erase());
-        nvs_ret = nvs_flash_init();
+        ESP_LOGE(TAG, "NVS requires recovery (%s); refusing automatic erase to protect identities",
+                 esp_err_to_name(nvs_ret));
+        fatal_error_loop("NVS recovery required; use an explicit factory reset");
     }
-    ESP_ERROR_CHECK(nvs_ret);
+    if (nvs_ret != ESP_OK) {
+        fatal_error_loop("NVS initialization failed");
+    }
 
     /* Khởi tạo network interface và event loop — chỉ gọi 1 lần, dùng chung cho cả AP và STA */
     ESP_ERROR_CHECK(esp_netif_init());
@@ -256,21 +364,30 @@ void app_main(void)
 
     /* Face engine (model AI) */
     if (face_engine_init(FACE_DB_PATH) != 0) {
-        ESP_LOGE(TAG, "Face engine init failed!");
-        /* Không abort — vẫn có thể enroll nếu model lỗi tạm thời */
+        fatal_error_loop("face engine initialization failed");
     }
+    int student_count = student_db_count();
+    int enrolled_faces = face_engine_get_enrolled_count();
+    const bool identity_db_consistent = enrolled_faces == student_count;
     ESP_LOGI(TAG, "Đã đăng ký %d học sinh | %d khuôn mặt",
-             student_db_count(), face_engine_get_enrolled_count());
+             student_count, enrolled_faces);
+    if (!identity_db_consistent) {
+        ESP_LOGE(TAG, "Identity database mismatch: students=%d faces=%d",
+                 student_count, enrolled_faces);
+    }
 
     /* Một buổi đăng ký chỉ kết thúc khi giáo viên bấm nút hoàn tất. Nếu mất
      * điện giữa buổi, robot mở lại AP và tiếp tục từ danh sách đã lưu. */
-    int enrolled_faces = face_engine_get_enrolled_count();
     bool enrollment_complete = student_db_is_enrollment_complete();
-    if (enrolled_faces == 0 || !enrollment_complete) {
+    if (enrolled_faces == 0 || !enrollment_complete || maintenance_enrollment ||
+        !identity_db_consistent) {
+        if (strstr(CDP_ENROLL_AP_PASSWORD, "replace-with") != NULL) {
+            fatal_error_loop("change the default enrollment AP password");
+        }
         ESP_LOGI(TAG, "Enrollment session active: faces=%d complete=%s",
                  enrolled_faces, enrollment_complete ? "yes" : "no");
-        ESP_LOGI(TAG, "Kết nối WiFi: '%s'  pass: '%s'  → mở http://192.168.4.1",
-                 CDP_ENROLL_AP_SSID, CDP_ENROLL_AP_PASSWORD);
+        ESP_LOGI(TAG, "Kết nối WiFi enrollment '%s' rồi mở http://192.168.4.1",
+                 CDP_ENROLL_AP_SSID);
         esp_err_t enroll_err = enroll_server_start(CDP_ENROLL_AP_SSID,
                                                     CDP_ENROLL_AP_PASSWORD);
         if (enroll_err == ESP_OK) {
@@ -285,6 +402,7 @@ void app_main(void)
                      face_engine_get_enrolled_count());
         } else {
             ESP_LOGE(TAG, "Không thể mở enrollment mode: %s", esp_err_to_name(enroll_err));
+            fatal_error_loop("enrollment server failed to start");
         }
     }
 
@@ -313,14 +431,14 @@ void app_main(void)
     }
 
     /* HTTP Upload đến Google Apps Script */
-    if (strlen(CDP_GAS_URL) > 10) {
+    if (cloud_config_valid()) {
         esp_err_t upload_err = http_upload_init(CDP_GAS_URL, CDP_GAS_TOKEN);
         s_upload_enabled = upload_err == ESP_OK;
         if (!s_upload_enabled) {
             ESP_LOGE(TAG, "Không thể khởi tạo uploader: %s", esp_err_to_name(upload_err));
         }
     } else {
-        ESP_LOGW(TAG, "CDP_GAS_URL chưa cấu hình — upload bị tắt");
+        ESP_LOGW(TAG, "Cloud URL/token/device ID chưa hợp lệ — upload bị tắt");
     }
 
     /* Vòng lặp điểm danh vô tận */

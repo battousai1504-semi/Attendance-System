@@ -129,9 +129,12 @@ esp_err_t wifi_time_start(void)
     if (s_started) {
         return ESP_OK;
     }
-    if (CDP_WIFI_SSID[0] == '\0') {
+    const size_t ssid_length = strlen(CDP_WIFI_SSID);
+    const size_t password_length = strlen(CDP_WIFI_PASSWORD);
+    if (ssid_length == 0 || ssid_length > 32 || password_length > 63 ||
+        (password_length > 0 && password_length < 8)) {
         s_state = WIFI_TIME_NOT_CONFIGURED;
-        ESP_LOGW(TAG, "Wi-Fi SSID is empty; configure wifi_time_config.h");
+        ESP_LOGW(TAG, "Wi-Fi credentials are invalid; configure wifi_time_config.h");
         return ESP_ERR_INVALID_ARG;
     }
     s_started = true;

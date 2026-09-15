@@ -13,8 +13,6 @@
  * tắt AP và chuyển robot về chế độ điểm danh WiFi Station.
  */
 
-#pragma once
-
 #include <stdbool.h>
 #include "esp_err.h"
 

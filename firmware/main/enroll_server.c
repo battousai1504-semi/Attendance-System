@@ -17,7 +17,7 @@
 
 static httpd_handle_t s_server;
 static esp_netif_t *s_ap_netif;
-static bool s_done_requested;
+static volatile bool s_done_requested;
 static bool s_wifi_initialized;
 static bool s_wifi_started;
 
@@ -113,6 +113,7 @@ static const char *INDEX_HTML =
     "button{width:100%;padding:12px;border:0;border-radius:8px;font-size:1em;"
     "cursor:pointer;margin-bottom:8px;color:#fff}button:disabled{opacity:.55}"
     ".enroll{background:#0ea5e9}.undo{background:#b45309}.done{background:#16a34a}"
+    ".reset{background:#991b1b;margin-top:18px}"
     "#progress{padding:10px;background:#0f172a;border-radius:8px;margin-bottom:14px}"
     "#students{max-height:190px;overflow:auto;padding-left:28px;color:#cbd5e1}"
     "#students li{padding:3px 0}"
@@ -122,6 +123,7 @@ static const char *INDEX_HTML =
     "</style></head><body>"
     "<h1>🎓 Đăng ký học sinh</h1><div class='card'>"
     "<div id='progress'>Đã đăng ký: <b id='count'>0</b> / <span id='capacity'>50</span></div>"
+    "<div id='dbwarning' class='err' style='display:none;margin-bottom:12px;padding:10px'></div>"
     "<ol id='students'></ol>"
     "<label>Họ tên học sinh</label>"
     "<input id='name' type='text' placeholder='Nguyễn Văn A' autocomplete='off'>"
@@ -130,6 +132,7 @@ static const char *INDEX_HTML =
     "<button id='enrollBtn' class='enroll' onclick='doEnroll()'>📸 Chụp & Đăng ký</button>"
     "<button class='undo' onclick='undoLast()'>↩ Hoàn tác em cuối</button>"
     "<button class='done' onclick='doneSession()'>✅ Kết thúc buổi đăng ký</button>"
+    "<button class='reset' onclick='resetIdentities()'>🗑 Xóa toàn bộ danh tính</button>"
     "<div id='status'></div></div>"
     "<script>"
     "function showStatus(msg,ok){var el=document.getElementById('status');"
@@ -137,6 +140,9 @@ static const char *INDEX_HTML =
     "async function refreshStudents(){try{var j=await (await fetch('/students')).json();"
     "document.getElementById('count').textContent=j.count;"
     "document.getElementById('capacity').textContent=j.capacity;"
+    "var warning=document.getElementById('dbwarning');"
+    "if(!j.consistent){warning.textContent='Dữ liệu không đồng bộ: '+j.face_count+' khuôn mặt, '+j.count+' học sinh. Hãy hoàn tác hoặc xóa toàn bộ danh tính.';warning.style.display='block'}"
+    "else warning.style.display='none';"
     "var list=document.getElementById('students');list.textContent='';"
     "j.students.forEach(function(s){var li=document.createElement('li');"
     "li.textContent='ID '+s.id+': '+s.name+(s.class?' — '+s.class:'');list.appendChild(li)})}catch(e){}}"
@@ -164,6 +170,9 @@ static const char *INDEX_HTML =
     "  try{var j=await (await fetch('/done',{method:'POST'})).json();"
     "  if(j.ok)showStatus('🚀 Robot đang chuyển sang chế độ điểm danh...',true);"
     "  else showStatus('❌ Lỗi: '+j.error,false);}catch(e){showStatus('❌ Lỗi kết nối với robot',false);}}"
+    "async function resetIdentities(){var code=prompt('Thao tác này xóa toàn bộ khuôn mặt và danh sách học sinh. Nhập RESET để xác nhận:');"
+    "  if(code!=='RESET')return;try{var j=await (await fetch('/reset-identities',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'confirm=RESET'})).json();"
+    "  showStatus(j.ok?'Đã xóa toàn bộ danh tính':'❌ Lỗi: '+j.error,j.ok);await refreshStudents();}catch(e){showStatus('❌ Lỗi kết nối với robot',false);}}"
     "refreshStudents();document.getElementById('name').focus();"
     "</script></body></html>";
 
@@ -197,9 +206,12 @@ static esp_err_t handler_students(httpd_req_t *req)
         count++;
     }
     if (err == ESP_OK) {
-        char suffix[64];
-        snprintf(suffix, sizeof(suffix), "],\"count\":%d,\"capacity\":%d}",
-                 count, ENROLLMENT_CAPACITY);
+        char suffix[128];
+        const int face_count = face_engine_get_enrolled_count();
+        snprintf(suffix, sizeof(suffix),
+                 "],\"count\":%d,\"face_count\":%d,\"consistent\":%s,\"capacity\":%d}",
+                 count, face_count, count == face_count ? "true" : "false",
+                 ENROLLMENT_CAPACITY);
         err = httpd_resp_send_chunk(req, suffix, HTTPD_RESP_USE_STRLEN);
     }
     if (err == ESP_OK) err = httpd_resp_send_chunk(req, NULL, 0);
@@ -335,6 +347,13 @@ static esp_err_t handler_done(httpd_req_t *req)
                         HTTPD_RESP_USE_STRLEN);
         return ESP_OK;
     }
+    const int student_count = student_db_count();
+    if (face_count != student_count) {
+        httpd_resp_send(req,
+                        "{\"ok\":false,\"error\":\"Số khuôn mặt và học sinh không khớp; hãy sửa hoặc reset danh tính\"}",
+                        HTTPD_RESP_USE_STRLEN);
+        return ESP_OK;
+    }
     esp_err_t marker_err = student_db_set_enrollment_complete(true);
     if (marker_err != ESP_OK) {
         ESP_LOGE(TAG, "Could not finish enrollment session: %s", esp_err_to_name(marker_err));
@@ -350,11 +369,55 @@ static esp_err_t handler_done(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* ─── POST /reset-identities ────────────────────────────────── */
+static esp_err_t handler_reset_identities(httpd_req_t *req)
+{
+    char body[32] = {0};
+    if (req->content_len <= 0 || req->content_len >= sizeof(body)) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid confirmation");
+        return ESP_FAIL;
+    }
+    size_t total = 0;
+    while (total < req->content_len) {
+        const int received = httpd_req_recv(req, body + total,
+                                            req->content_len - total);
+        if (received <= 0) {
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                                "Incomplete confirmation");
+            return ESP_FAIL;
+        }
+        total += (size_t)received;
+    }
+    body[total] = '\0';
+    char confirmation[8] = {0};
+    if (!form_get_value(body, "confirm", confirmation, sizeof(confirmation)) ||
+        strcmp(confirmation, "RESET") != 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Confirmation required");
+        return ESP_FAIL;
+    }
+
+    httpd_resp_set_type(req, "application/json; charset=UTF-8");
+    if (face_engine_clear_all() != 0 || student_db_clear_all() != ESP_OK) {
+        ESP_LOGE(TAG, "Identity reset failed; database may require recovery");
+        httpd_resp_send(req, "{\"ok\":false,\"error\":\"Không thể xóa toàn bộ danh tính\"}",
+                        HTTPD_RESP_USE_STRLEN);
+        return ESP_OK;
+    }
+    ESP_LOGW(TAG, "All face embeddings and student metadata were reset");
+    httpd_resp_send(req, "{\"ok\":true}", HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+}
+
 /* ─── Public API ─────────────────────────────────────────────── */
 esp_err_t enroll_server_start(const char *ap_ssid, const char *ap_pass)
 {
-    if (s_server != NULL || s_wifi_initialized || ap_ssid == NULL || ap_ssid[0] == '\0') {
+    if (s_server != NULL || s_wifi_initialized) {
         return ESP_ERR_INVALID_STATE;
+    }
+    if (ap_ssid == NULL || ap_ssid[0] == '\0' || strlen(ap_ssid) > 32 ||
+        ap_pass == NULL || strlen(ap_pass) < 8 || strlen(ap_pass) > 63) {
+        ESP_LOGE(TAG, "Enrollment AP requires a valid SSID and WPA2 password");
+        return ESP_ERR_INVALID_ARG;
     }
     s_done_requested = false;
     esp_err_t err;
@@ -376,12 +439,8 @@ esp_err_t enroll_server_start(const char *ap_ssid, const char *ap_pass)
     ap_cfg.ap.ssid_len = (uint8_t)strlen(ap_ssid);
     ap_cfg.ap.max_connection = 4;
     ap_cfg.ap.channel = 6;
-    if (ap_pass && strlen(ap_pass) >= 8) {
-        strncpy((char *)ap_cfg.ap.password, ap_pass, sizeof(ap_cfg.ap.password) - 1);
-        ap_cfg.ap.authmode = WIFI_AUTH_WPA2_PSK;
-    } else {
-        ap_cfg.ap.authmode = WIFI_AUTH_OPEN;
-    }
+    strncpy((char *)ap_cfg.ap.password, ap_pass, sizeof(ap_cfg.ap.password) - 1);
+    ap_cfg.ap.authmode = WIFI_AUTH_WPA2_PSK;
     err = esp_wifi_set_mode(WIFI_MODE_AP);
     if (err != ESP_OK) goto fail;
     err = esp_wifi_set_config(WIFI_IF_AP, &ap_cfg);
@@ -401,6 +460,10 @@ esp_err_t enroll_server_start(const char *ap_ssid, const char *ap_pass)
     static const httpd_uri_t uri_enroll   = { .uri = "/enroll",   .method = HTTP_POST, .handler = handler_enroll   };
     static const httpd_uri_t uri_undo     = { .uri = "/undo",     .method = HTTP_POST, .handler = handler_undo     };
     static const httpd_uri_t uri_done     = { .uri = "/done",     .method = HTTP_POST, .handler = handler_done     };
+    static const httpd_uri_t uri_reset = {
+        .uri = "/reset-identities", .method = HTTP_POST,
+        .handler = handler_reset_identities
+    };
     err = httpd_register_uri_handler(s_server, &uri_root);
     if (err != ESP_OK) goto fail;
     err = httpd_register_uri_handler(s_server, &uri_students);
@@ -410,6 +473,8 @@ esp_err_t enroll_server_start(const char *ap_ssid, const char *ap_pass)
     err = httpd_register_uri_handler(s_server, &uri_undo);
     if (err != ESP_OK) goto fail;
     err = httpd_register_uri_handler(s_server, &uri_done);
+    if (err != ESP_OK) goto fail;
+    err = httpd_register_uri_handler(s_server, &uri_reset);
     if (err != ESP_OK) goto fail;
 
     ESP_LOGI(TAG, "Enroll server UP — SSID: %s  IP: 192.168.4.1", ap_ssid);
