@@ -24,7 +24,7 @@ int main(void)
     assert(strstr(json, "\"event_id\":\"1760000000-7-abcdef01\"") != NULL);
     assert(strstr(json, "\"name\":\"Nguyen \\\"A\\\"\\\\Test\"") != NULL);
     assert(strstr(json, "\"session_id\":\"\"") != NULL);
-    assert(strstr(json, "\"firmware_version\":\"3.0.0-phase3-dev\"") != NULL);
+    assert(strstr(json, "\"firmware_version\":\"3.1.0-phase3-ux-dev\"") != NULL);
 
     char too_small[32];
     assert(!http_payload_build_attendance(
@@ -54,7 +54,7 @@ int main(void)
     assert(http_payload_build_ota_manifest_request(
         "robot-01", "0123456789abcdef0123456789abcdef", json, sizeof(json)));
     assert(strstr(json, "\"type\":\"ota_manifest\"") != NULL);
-    assert(strstr(json, "\"firmware_version\":\"3.0.0-phase3-dev\"") != NULL);
+    assert(strstr(json, "\"firmware_version\":\"3.1.0-phase3-ux-dev\"") != NULL);
 
     heartbeat_payload_t invalid_heartbeat = heartbeat;
     invalid_heartbeat.rssi = 1;

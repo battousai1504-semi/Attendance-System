@@ -44,6 +44,9 @@
 #include "student_db.h"
 #include "wifi_time.h"
 
+_Static_assert(AUDIO_FEEDBACK_STUDENT_MAX_ID == STUDENT_MAX_COUNT,
+               "Student voice track range must cover every enrolled ID");
+
 /* ─── Cấu hình ───────────────────────────────────────────────── */
 
 /* Đường dẫn SPIFFS để lưu face database */
@@ -252,7 +255,9 @@ static void on_recognized(const face_engine_result_t *result)
             return;
         }
         if (upload_staged) http_upload_notify();
-        audio_feedback_notify(AUDIO_EVENT_ATTENDANCE_SUCCESS);
+        /* The SD card maps this stable face/student ID to one complete spoken
+         * sentence: “Xin chào <tên>, bạn đã điểm danh thành công”. */
+        audio_feedback_notify_attendance((uint16_t)result->id);
 
         led_blink(2, 150);   /* 2 nháy nhanh = thành công */
         ESP_LOGI(TAG, "✅ ĐIỂM DANH: %s (%s) conf=%d‰",

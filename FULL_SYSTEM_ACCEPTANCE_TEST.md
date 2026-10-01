@@ -31,7 +31,7 @@ nếu phải chạy lại; ghi thêm lượt mới):
 | Ca | Kết quả (PASS/FAIL/BLOCKED) | Thời gian, Event ID, bằng chứng / ghi chú |
 |---|---|---|
 | TC-00 Chuẩn bị | | |
-| TC-01 Sáu track | | |
+| TC-01 Sáu track + lời chào theo tên | | |
 | TC-02 Volume/mute | | |
 | TC-03 Enroll audio | | |
 | TC-04 Present/duplicate | | |
@@ -70,12 +70,18 @@ nếu phải chạy lại; ghi thêm lượt mới):
 
    Không nối loa xuống GND, không cấp module từ 3V3. Nếu module clone gây
    sụt áp, hạ volume và xem mục nguồn ở `P3_TEST_GUIDE.md`.
-4. Chuẩn bị thẻ FAT32 (tối đa 32 GB) với sáu MP3 **thật**, không phải file rỗng.
+4. Chuẩn bị thẻ FAT32 (tối đa 32 GB) với sáu MP3 câu chung và một MP3 lời
+   chào đầy đủ cho mỗi Student ID, không phải file rỗng. Export
+   `student-voice-roster.json` tại portal đăng ký, chuẩn bị `student_0001.mp3`
+   cho ID 1, `student_0002.mp3` cho ID 2 (mỗi file nói đúng “Xin chào [tên],
+   bạn đã điểm danh thành công”).
    Trên Ubuntu xác định đúng mount bằng `lsblk -o NAME,SIZE,MODEL,FSTYPE,MOUNTPOINTS`;
-   chạy `./tools/prepare_audio_sd.sh /duong-dan/audio-source /media/$USER/TEN_THE`,
+   chạy `./tools/prepare_audio_sd.sh /duong-dan/audio-source /media/$USER/TEN_THE /duong-dan/rieng/student-voice-roster.json`,
    `sync`, eject rồi mới lắp thẻ khi DFPlayer mất nguồn. Mapping:
    `0001` khởi động, `0002` điểm danh thành công, `0003` trùng,
-   `0004` chưa có giờ, `0005` enroll, `0006` lỗi có thể phục hồi.
+   `0004` chưa có giờ, `0005` enroll, `0006` lỗi có thể phục hồi;
+   `1001`/`1002` là lời chào đúng tên ID 1/2. Xem chi tiết tại
+   `P3_TEST_GUIDE.md`.
 5. Ubuntu: `ls -l /dev/serial/by-id/`, xác minh symlink đang trỏ tới board.
    Trong `firmware/` chạy:
 
@@ -86,8 +92,9 @@ nếu phải chạy lại; ghi thêm lượt mới):
 
    Thay `/dev/ttyACM0` bằng symlink thực tế trong `/dev/serial/by-id/`
    nếu khác. **Không `erase-flash`**.
-   Nếu firmware 3.0.0-phase3-dev đã nạp đúng và hoạt động thì chỉ cần monitor,
-   không cần flash lại. Kỳ vọng boot báo `3.0.0-phase3-dev`, camera OK,
+   Để test lời chào theo tên phải nạp bản mới `3.1.0-phase3-ux-dev`; firmware
+   `3.0.0-phase3-dev` cũ chỉ phát câu chung. Kỳ vọng boot báo
+   `3.1.0-phase3-ux-dev`, camera OK,
    audio UART1 TX=41 RX=42, Wi-Fi/NTP sẵn sàng và vòng nhận diện chạy. Không
    kết luận module hỏng chỉ vì clone không trả UART ACK; âm thanh thực mới là
    phép thử phát.
@@ -109,7 +116,8 @@ nếu phải chạy lại; ghi thêm lượt mới):
    done
    ```
 
-   Đối chiếu **âm thanh nghe được và đúng nội dung** của từng track; HTTP OK
+   Sau đó nhập ID 1, ID 2 ở nút **Phát thử lời chào có tên** và nghe đúng hai
+   tên khác nhau. Đối chiếu **âm thanh nghe được và đúng nội dung**; HTTP OK
    chỉ chứng minh lệnh được nhận, không chứng minh loa/thẻ phát được.
 3. **TC-02:** đổi volume sang 12, reboot và mở lại portal: vẫn bật/12.
    Tắt Audio, reboot; trong một session test riêng đang ACTIVE và sau cooldown
@@ -124,13 +132,15 @@ nếu phải chạy lại; ghi thêm lượt mới):
 
 ## 3. Điểm danh, session và dashboard (TC-04…07, khoảng 20 phút)
 
-1. **TC-04:** trên dashboard tạo session `E2E-YYYYMMDD-A`, đúng lớp/device;
-   Starts At = hiện tại trừ 5 phút, Late After = hiện tại cộng 5 phút,
-   Ends At = hiện tại cộng 30 phút. ID 1 nhìn camera một lần. Ghi Event ID
+1. **TC-04:** trên dashboard mở **Bắt đầu buổi học mới**, chọn lớp, tiết và
+   45 phút; để các trường nâng cao trống để kiểm tra luồng giáo viên tối giản.
+   Mã buổi, giờ bắt đầu, mốc đi muộn 10 phút và giờ kết thúc phải tự tạo đúng.
+   ID 1 nhìn camera một lần. Ghi Event ID
    trong serial. PASS khi local báo saved, cloud báo uploaded, Sheet
    `Attendance` có **đúng một** dòng cùng Event ID, dashboard thấy Có mặt
-   và track 2 phát. Giữ ID 1 trong khung trong cooldown 60 giây: không thêm
-   event/row, track 3 không spam quá một lần/5 giây.
+   và track `1001.mp3` phát **đúng tên ID 1 cùng câu thành công đầy đủ**. Giữ
+   ID 1 trong khung trong cooldown 60 giây: không thêm event/row, track 3
+   không cắt ngang lời chào hoặc spam.
 2. **TC-05:** ID 2 chưa điểm danh nên tổng buổi A (roster đúng hai học sinh)
    là 1 Có mặt + 1 Vắng. Đổi ID 2 sang Có phép, nhập lý do. UI phải báo lưu
    thành công; reload vẫn Có phép, `AuditLog` có `ATTENDANCE_OVERRIDE`
@@ -139,10 +149,12 @@ nếu phải chạy lại; ghi thêm lượt mới):
    Reason của ID 2 đúng với lý do Có phép; học sinh không điều chỉnh để trống
    Reason. Sau đó giáo viên **đóng buổi A thủ công**; status CLOSED và
    `SESSION_STATUS_CHANGE` có trong AuditLog.
-3. **TC-06:** tạo session `E2E-YYYYMMDD-B` sau khi A đã đóng, Starts At =
+3. **TC-06:** tạo session `E2E-YYYYMMDD-B` trong **Tùy chọn nâng cao** sau khi A
+   đã đóng, Starts At =
    hiện tại trừ 5 phút, Late After = hiện tại trừ 1 phút, Ends At = hiện tại
    cộng **3 phút**. Cho ID 2 nhìn camera: đúng một event và trạng thái
-   Đi muộn; đừng dùng lại Event ID của A. Với mỗi session:
+   Đi muộn; lời chào `1002.mp3` phải đúng tên ID 2; đừng dùng lại Event ID của A.
+   Với mỗi session:
    `Có mặt + Đi muộn + Vắng + Có phép = sĩ số`. Thử lọc lớp/session/ngày,
    tìm ID và mở dashboard trên điện thoại. Chuyển A → B → A nhanh: dữ liệu buổi
    đã xem hiện tạm ngay, thông báo đang đồng bộ xuất hiện, và response cũ không
@@ -157,7 +169,7 @@ nếu phải chạy lại; ghi thêm lượt mới):
 ## 4. Mạng, outbox và camera (TC-08…10, khoảng 10 phút hoạt động + 5 phút chờ)
 
 1. **TC-08:** khi online, quan sát ít nhất ba heartbeat cách nhau khoảng 60
-   giây. `Devices`/dashboard có ONLINE, firmware `3.0.0-phase3-dev`,
+   giây. `Devices`/dashboard có ONLINE, firmware `3.1.0-phase3-ux-dev`,
    Last Seen mới, RSSI, heap/PSRAM, pending và sync latency hợp lệ. Camera
    vẫn nhận diện khi heartbeat/upload chạy.
 2. **TC-09:** ngắt **Internet/WAN nhưng giữ router Wi-Fi 2,4 GHz hoạt động**
@@ -179,21 +191,23 @@ nếu phải chạy lại; ghi thêm lượt mới):
 1. **TC-11 — thiếu microSD/module:** tắt nguồn trước khi tháo thẻ; boot lại,
    camera/điểm danh/local outbox/upload vẫn bình thường dù không có âm thanh.
    Tắt nguồn lần nữa, tháo cả DFPlayer rồi boot: chức năng cốt lõi vẫn chạy,
-   không reset loop. Tắt nguồn, gắn lại đầy đủ; test lại track 2. **Không**
+   không reset loop. Tắt nguồn, gắn lại đầy đủ; test lại track `1001` có tên. **Không**
    hot-plug microSD, module hoặc dây loa khi đang có nguồn.
 2. **TC-12 — soak 30 phút:** hệ thống đầy đủ chạy liên tục, audio không spam,
    heartbeat đều, camera không tăng lỗi JPEG bất thường, không reset,
    brownout hay mất Wi-Fi dai dẳng. Ghi uptime đầu/cuối và số event/số row.
 3. **TC-13 — OTA regression khi DFPlayer đã cắm:** làm trên staging/thiết bị
    kiểm thử hoặc sau khi đã sao lưu và có HTTPS host trả **raw binary**.
-   Bản firmware hiện tại là `3.0.0-phase3-dev`; **không dùng các version
-   2.5.x trong ví dụ cũ**. Build candidate khác version, ví dụ:
+   Bản firmware mới là `3.1.0-phase3-ux-dev`; **hai binary
+   `3.0.1-e2e-test`/`3.0.2-rollback-test` được build trước thay đổi này đã
+   lỗi thời, không dùng để phát hành/test build mới**. Build candidate khác
+   version từ source mới, ví dụ:
 
    ```bash
    cd "$(git rev-parse --show-toplevel)/firmware"
-   eim run "idf.py -B build-ota-e2e -DCDP_FIRMWARE_VERSION_OVERRIDE=3.0.1-e2e-test build" v6.0.2
+   eim run "idf.py -B build-ota-ux-e2e -DCDP_FIRMWARE_VERSION_OVERRIDE=3.1.1-e2e-test build" v6.0.2
    cd ..
-   ./tools/package_ota.sh 3.0.1-e2e-test https://HOST/robot_attendance-3.0.1-e2e-test.bin firmware/build-ota-e2e/robot_attendance.bin firmware/build-ota-e2e/ota-manifest.json
+   ./tools/package_ota.sh 3.1.1-e2e-test https://HOST/robot_attendance-3.1.1-e2e-test.bin firmware/build-ota-ux-e2e/robot_attendance.bin firmware/build-ota-ux-e2e/ota-manifest.json
    ```
 
    Upload **đúng** binary đó; lấy `version/url/size/sha256` từ manifest vào
@@ -206,7 +220,7 @@ nếu phải chạy lại; ghi thêm lượt mới):
 4. Nếu các ca **checksum sai, rút nguồn giữa tải, rollback tự động** của P2.5
    chưa từng được nghiệm thu trên board, chạy thêm theo
    `P2_5_TEST_GUIDE.md`, nhưng thay toàn bộ tên/version cũ bằng candidate
-   riêng dựa trên `3.0.0-phase3-dev` (rollback test dùng cờ
+   riêng dựa trên `3.1.0-phase3-ux-dev` (rollback test dùng cờ
    `CDP_OTA_ROLLBACK_TEST=ON`). Không flash image rollback-test qua USB làm
    image nền. Giữ lại log image trước/sau và kết quả bảo toàn dữ liệu. Sau
    cùng đặt `OTA_ENABLED=false`, bỏ manifest test khi không dùng nữa và

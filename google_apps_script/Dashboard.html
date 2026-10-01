@@ -16,8 +16,8 @@
       padding:16px; box-shadow:0 2px 8px #1018280a; }
     #login { max-width:440px; margin:60px auto; }
     label { display:block; color:var(--muted); font-weight:600; margin-bottom:5px; }
-    input,select,button { font:inherit; min-height:40px; border-radius:8px; }
-    input,select { width:100%; border:1px solid #cbd1dc; padding:8px 10px; background:white; }
+    input,select,textarea,button { font:inherit; min-height:40px; border-radius:8px; }
+    input,select,textarea { width:100%; border:1px solid #cbd1dc; padding:8px 10px; background:white; }
     button { border:0; padding:8px 14px; background:var(--brand); color:white;
       font-weight:700; cursor:pointer; }
     button.secondary { color:var(--ink); background:#eef2f7; }
@@ -25,8 +25,22 @@
     button:disabled { opacity:.5; cursor:not-allowed; }
     .grid { display:grid; grid-template-columns:repeat(5,1fr); gap:12px; margin:16px 0; }
     .metric strong { display:block; font-size:26px; margin-top:3px; }
-    .toolbar { display:grid; grid-template-columns:minmax(220px,2fr) repeat(3,minmax(130px,1fr)) auto auto;
+    .toolbar { display:grid; grid-template-columns:minmax(260px,1fr) auto auto;
       align-items:end; gap:10px; }
+    .toolbar-actions { display:flex; gap:8px; align-items:end; }
+    .toolbar-actions button { white-space:nowrap; }
+    .session-heading { display:flex; justify-content:space-between; align-items:center; gap:12px; }
+    .session-heading h2 { margin:0; }
+    .quick-form { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)) auto;
+      gap:10px; align-items:end; margin-top:12px; }
+    .quick-form button { white-space:nowrap; }
+    .advanced-fields { grid-column:1/-1; margin:0; padding:0; }
+    .advanced-fields .form-grid { margin-top:10px; }
+    .secondary-panel { margin-top:16px; }
+    .secondary-panel > summary { font-weight:700; }
+    .roster-heading { display:flex; align-items:end; gap:12px; flex-wrap:wrap; }
+    .roster-heading h2 { flex:1; margin:0; }
+    .roster-search { min-width:210px; }
     .table-wrap { overflow:auto; }
     table { width:100%; border-collapse:collapse; min-width:850px; }
     th,td { padding:10px; border-bottom:1px solid var(--line); text-align:left; }
@@ -40,12 +54,20 @@
     .ONLINE { color:var(--ok); background:#ecfdf3; }
     .OFFLINE { color:var(--bad); background:#fef3f2; }
     .DISABLED { color:var(--muted); background:#eef2f7; }
+    .ACTIVE { color:var(--ok); background:#ecfdf3; }
+    .CLOSED,.CANCELLED { color:var(--muted); background:#eef2f7; }
     .device-card { margin-bottom:16px; }
     .device-card table { min-width:1100px; }
     .device-card h2 { margin:0 0 4px; }
-    .row-actions { display:flex; gap:6px; min-width:245px; }
-    .row-actions select { min-height:34px; }
+    .row-actions { white-space:nowrap; }
     .row-actions button { min-height:34px; padding:5px 10px; }
+    dialog { border:1px solid var(--line); border-radius:14px; padding:22px;
+      width:min(440px,calc(100vw - 32px)); box-shadow:0 18px 50px #10182844; }
+    dialog::backdrop { background:#10182899; }
+    dialog h2 { margin:0 0 10px; }
+    dialog label { margin-top:12px; }
+    dialog textarea { min-height:90px; resize:vertical; }
+    dialog .form-actions { justify-content:flex-end; margin-top:16px; }
     .notice { position:sticky; top:8px; z-index:20; margin:12px 0;
       padding:10px 12px; border-radius:8px; display:none; box-shadow:0 4px 16px #10182826; }
     .notice.error { display:block; color:var(--bad); background:#fef3f2; }
@@ -58,7 +80,8 @@
     [hidden] { display:none !important; }
     @media (max-width:760px) {
       .grid { grid-template-columns:repeat(2,1fr); }
-      .toolbar,.form-grid { grid-template-columns:1fr; }
+      .toolbar,.form-grid,.quick-form { grid-template-columns:1fr; }
+      .toolbar-actions { grid-column:1; }
       main { padding:12px; }
     }
   </style>
@@ -78,14 +101,34 @@
 
     <section id="app" hidden>
       <div class="card toolbar">
-        <div><label for="session">Buổi học</label><select id="session"></select></div>
-        <div><label for="class-filter">Lớp</label><select id="class-filter"><option value="">Tất cả</option></select></div>
-        <div><label for="date-filter">Ngày</label><input id="date-filter" type="date"></div>
-        <div><label for="student-filter">Tìm học sinh</label><input id="student-filter" placeholder="Tên hoặc mã học sinh"></div>
-        <button id="refresh" class="secondary">Làm mới</button>
-        <button id="export">Xuất CSV</button>
+        <div><label for="session">Buổi học đang xem</label><select id="session"></select></div>
+        <div id="session-status" class="pill" role="status">Chưa có buổi học</div>
+        <div class="toolbar-actions">
+          <button id="refresh" class="secondary">Làm mới</button>
+          <button id="export">Xuất CSV</button>
+        </div>
       </div>
       <div id="notice" class="notice" role="status" aria-live="polite"></div>
+      <details id="quick-start" class="card secondary-panel">
+        <summary>Bắt đầu buổi học mới</summary>
+        <p class="meta">Chọn lớp, tiết và thời lượng; hệ thống tự đặt giờ bắt đầu, mốc đi muộn và mã buổi. Không cần nhập lại cấu hình thiết bị mỗi ngày.</p>
+        <form id="session-form" class="quick-form">
+          <div><label for="new-class">Lớp</label><input id="new-class" name="class_id" list="known-classes" required placeholder="12A1"><datalist id="known-classes"></datalist></div>
+          <div><label for="new-period">Tiết</label><input id="new-period" name="period" required value="P1" maxlength="24"></div>
+          <div><label for="duration-minutes">Thời lượng</label><select id="duration-minutes" name="duration_minutes"><option value="45">45 phút</option><option value="90">90 phút</option><option value="120">120 phút</option></select></div>
+          <button type="submit">Bắt đầu điểm danh</button>
+          <details id="session-advanced" class="advanced-fields">
+            <summary>Tùy chọn nâng cao: giờ, đi muộn, thiết bị, mã buổi</summary>
+            <div class="form-grid">
+              <div><label for="new-start">Bắt đầu lúc</label><input id="new-start" name="starts_at" type="datetime-local"><small>Để trống = bây giờ</small></div>
+              <div><label for="new-late">Đi muộn sau</label><input id="new-late" name="late_minutes" type="number" min="0" max="240" value="10"><small>Phút tính từ giờ bắt đầu</small></div>
+              <div><label for="new-end">Kết thúc lúc</label><input id="new-end" name="ends_at" type="datetime-local"><small>Để trống = theo thời lượng</small></div>
+              <div><label for="new-device">Thiết bị</label><input id="new-device" name="device_id" list="known-devices" placeholder="robot-01"><datalist id="known-devices"></datalist></div>
+              <div><label for="new-session-id">Mã buổi (tùy chọn)</label><input id="new-session-id" name="session_id" maxlength="64" placeholder="Tự tạo nếu bỏ trống"></div>
+            </div>
+          </details>
+        </form>
+      </details>
       <div class="grid">
         <div class="card metric"><span>Sĩ số</span><strong id="total">0</strong></div>
         <div class="card metric"><span>Có mặt</span><strong id="present">0</strong></div>
@@ -93,17 +136,10 @@
         <div class="card metric"><span>Vắng</span><strong id="absent">0</strong></div>
         <div class="card metric"><span>Có phép</span><strong id="excused">0</strong></div>
       </div>
-      <div class="card table-wrap device-card">
-        <h2>Trạng thái thiết bị</h2>
-        <p class="meta">Thiết bị chuyển sang OFFLINE nếu quá 180 giây không có heartbeat.</p>
-        <table>
-          <thead><tr><th>Thiết bị</th><th>Trạng thái</th><th>Last seen</th><th>Firmware</th><th>RSSI</th><th>Heap</th><th>PSRAM</th><th>Đang chờ</th><th>Sync</th><th>Lỗi liên tiếp</th><th>Lỗi gần nhất</th></tr></thead>
-          <tbody id="device-rows"></tbody>
-        </table>
-      </div>
       <div class="card table-wrap">
-        <div class="form-actions">
-          <h2 style="flex:1;margin:0">Danh sách điểm danh</h2>
+        <div class="roster-heading">
+          <h2>Danh sách điểm danh</h2>
+          <div class="roster-search"><label for="student-filter">Tìm học sinh</label><input id="student-filter" placeholder="Tên hoặc mã học sinh"></div>
           <button id="close-session" class="danger">Đóng buổi học</button>
         </div>
         <p id="session-meta" class="meta"></p>
@@ -112,27 +148,44 @@
           <tbody id="student-rows"></tbody>
         </table>
       </div>
-
-      <details class="card">
-        <summary>Tạo buổi học mới</summary>
-        <form id="session-form" class="form-grid">
-          <div><label>Session ID</label><input name="session_id" required placeholder="12A1-20260921-P1"></div>
-          <div><label>Lớp</label><input name="class_id" required placeholder="12A1"></div>
-          <div><label>Tiết</label><input name="period" required placeholder="P1"></div>
-          <div><label>Thiết bị</label><input name="device_id" required value="robot-01"></div>
-          <div><label>Bắt đầu</label><input name="starts_at" type="datetime-local" required></div>
-          <div><label>Đi muộn sau</label><input name="late_after" type="datetime-local" required></div>
-          <div><label>Kết thúc</label><input name="ends_at" type="datetime-local" required></div>
-          <div class="form-actions"><button type="submit">Tạo và kích hoạt</button></div>
+      <dialog id="correction-dialog" aria-labelledby="correction-title">
+        <form id="correction-form">
+          <h2 id="correction-title">Điều chỉnh điểm danh</h2>
+          <p class="meta">Thay đổi sẽ được lưu vào AuditLog; sự kiện nhận diện gốc không bị xóa.</p>
+          <label for="correction-status">Trạng thái mới</label>
+          <select id="correction-status" required></select>
+          <label for="correction-reason">Lý do điều chỉnh</label>
+          <textarea id="correction-reason" required maxlength="200" placeholder="Ví dụ: Có giấy xin phép"></textarea>
+          <div class="form-actions">
+            <button id="correction-cancel" type="button" class="secondary">Hủy</button>
+            <button id="correction-save" type="submit">Lưu điều chỉnh</button>
+          </div>
         </form>
+      </dialog>
+
+      <details class="card secondary-panel">
+        <summary>Lọc buổi cũ theo lớp hoặc ngày</summary>
+        <div class="form-grid">
+          <div><label for="class-filter">Lớp</label><select id="class-filter"><option value="">Tất cả</option></select></div>
+          <div><label for="date-filter">Ngày</label><input id="date-filter" type="date"></div>
+        </div>
+      </details>
+      <details class="card table-wrap device-card secondary-panel">
+        <summary>Trạng thái thiết bị và thông tin kỹ thuật</summary>
+        <p class="meta">Thiết bị chuyển sang OFFLINE nếu quá 180 giây không có heartbeat.</p>
+        <table>
+          <thead><tr><th>Thiết bị</th><th>Trạng thái</th><th>Last seen</th><th>Firmware</th><th>RSSI</th><th>Heap</th><th>PSRAM</th><th>Đang chờ</th><th>Sync</th><th>Lỗi liên tiếp</th><th>Lỗi gần nhất</th></tr></thead>
+          <tbody id="device-rows"></tbody>
+        </table>
       </details>
     </section>
   </main>
   <script>
     const labels = {PRESENT:'Có mặt',LATE:'Đi muộn',ABSENT:'Vắng',EXCUSED:'Có phép'};
+    const sessionLabels = {ACTIVE:'Đang điểm danh',CLOSED:'Đã kết thúc',CANCELLED:'Đã hủy'};
     const deviceLabels = {ONLINE:'Online',OFFLINE:'Offline',DISABLED:'Đã tắt'};
     let state = {key:'', actor:'', data:null, cache:Object.create(null), loadToken:0,
-      pending:false, stale:false, mutating:false};
+      pending:false, stale:false, mutating:false, correction:null};
     const byId = (id) => document.getElementById(id);
 
     function showNotice(message, type='error') {
@@ -146,6 +199,10 @@
         unknown_session_or_student:'Không tìm thấy buổi học hoặc học sinh.',
         student_not_in_session_class:'Học sinh không thuộc lớp của buổi học này.',
         session_not_active:'Buổi học không còn ở trạng thái hoạt động.',
+        device_has_active_session:'Thiết bị đang có buổi học hoạt động. Hãy đóng buổi đó trước khi bắt đầu buổi mới.',
+        session_exists:'Mã buổi đã tồn tại. Hãy đổi mã trong Tùy chọn nâng cao.',
+        invalid_session_time:'Mốc bắt đầu, đi muộn và kết thúc chưa hợp lệ.',
+        invalid_session_fields:'Mã buổi hoặc Device ID có ký tự không hợp lệ.',
         invalid_status:'Trạng thái điểm danh không hợp lệ.',
         dashboard_unauthorized:'Phiên đăng nhập không hợp lệ. Vui lòng đăng nhập lại.',
       };
@@ -170,6 +227,10 @@
       byId('student-rows').querySelectorAll('select,button').forEach((control) => {
         control.disabled = blocked;
       });
+      ['correction-status','correction-reason','correction-save'].forEach((id) => {
+        byId(id).disabled = blocked;
+      });
+      byId('correction-cancel').disabled = state.mutating;
       byId('session-form').querySelectorAll('button').forEach((control) => {
         control.disabled = blocked;
       });
@@ -188,6 +249,9 @@
       setMutating(false);
     }
     function load(sessionId='', useCache=false, quiet=false) {
+      if (!quiet && !state.mutating && byId('correction-dialog').open) {
+        byId('correction-dialog').close(); state.correction=null;
+      }
       const token = ++state.loadToken;
       if (useCache && state.cache[sessionId]) render(state.cache[sessionId]);
       if (!quiet) {
@@ -222,17 +286,33 @@
       const classFilter = byId('class-filter');
       const previousClass = classFilter.value;
       classFilter.replaceChildren(new Option('Tất cả',''));
-      [...new Set(data.sessions.map((item) => item.class_id))].sort().forEach((classId) => {
+      const classIds = [...new Set(data.sessions.map((item) => item.class_id))].sort();
+      classIds.forEach((classId) => {
         classFilter.appendChild(new Option(classId,classId));
       });
       classFilter.value = previousClass;
+      const classSuggestions = byId('known-classes'); classSuggestions.replaceChildren();
+      classIds.forEach((classId) => classSuggestions.appendChild(new Option(classId,classId)));
+      const deviceSuggestions = byId('known-devices'); deviceSuggestions.replaceChildren();
+      const devices = Array.isArray(data.devices) ? data.devices : [];
+      devices.forEach((device) => deviceSuggestions.appendChild(
+        new Option(device.device_id, device.device_id)));
+      if (!byId('new-device').value) {
+        if (devices.length === 1) byId('new-device').value = devices[0].device_id;
+        else if (selected && selected.device_id) byId('new-device').value = selected.device_id;
+      }
       fillSessionOptions(selected ? selected.session_id : '');
       ['total','present','late','absent','excused'].forEach((key) => {
         byId(key).textContent = data.summary[key];
       });
+      const sessionStatus = byId('session-status');
+      sessionStatus.textContent = selected ? sessionLabels[selected.status] || selected.status :
+        'Chưa có buổi học';
+      sessionStatus.className = `pill ${selected ? selected.status : ''}`;
       byId('session-meta').textContent = selected ?
-        `${selected.class_id} · ${selected.period} · ${new Date(selected.starts_at).toLocaleString('vi-VN')} → ${new Date(selected.ends_at).toLocaleString('vi-VN')}` :
-        'Chưa có buổi học.';
+        `${selected.class_id} · ${selected.period} · ${new Date(selected.starts_at).toLocaleString('vi-VN')} → ${new Date(selected.ends_at).toLocaleString('vi-VN')} · Mã buổi: ${selected.session_id}` :
+        'Chưa có buổi học. Mở “Bắt đầu buổi học mới” ở phía trên.';
+      if (!selected && data.sessions.length === 0) byId('quick-start').open = true;
       byId('close-session').disabled = !selected || selected.status !== 'ACTIVE';
       renderDevices();
       renderRows();
@@ -245,13 +325,60 @@
     }
     function fillSessionOptions(preferredId='') {
       const select=byId('session'); select.replaceChildren();
-      filteredSessions().forEach((item) => {
+      const sessions = filteredSessions().sort((left,right) =>
+        (right.status === 'ACTIVE') - (left.status === 'ACTIVE') ||
+        String(right.starts_at).localeCompare(String(left.starts_at)));
+      sessions.forEach((item) => {
         const option = document.createElement('option'); option.value = item.session_id;
-        option.textContent = `${item.session_id} · ${item.class_id} · ${item.status}`;
+        option.textContent = `${item.class_id} · ${item.period} · ${new Date(item.starts_at).toLocaleDateString('vi-VN')} · ${sessionLabels[item.status] || item.status}`;
+        option.title = `Mã buổi: ${item.session_id}`;
         option.selected = item.session_id === preferredId;
         select.appendChild(option);
       });
       return select.value;
+    }
+
+    function sessionSlug(value) {
+      return String(value).normalize('NFD').replace(/[\u0300-\u036f]/g,'')
+        .replace(/đ/g,'d').replace(/Đ/g,'D')
+        .replace(/[^A-Za-z0-9._:-]+/g,'-').replace(/^-+|-+$/g,'') || 'BUOI';
+    }
+    function generatedSessionId(classId, period, start) {
+      const pad = (number) => String(number).padStart(2,'0');
+      const date = `${start.getFullYear()}${pad(start.getMonth()+1)}${pad(start.getDate())}`;
+      const time = `${pad(start.getHours())}${pad(start.getMinutes())}`;
+      const base = `${date}-${sessionSlug(classId)}-${sessionSlug(period)}-${time}`.slice(0,56);
+      const existing = new Set((state.data && state.data.sessions || [])
+        .map((session) => session.session_id));
+      let candidate = base, suffix = 2;
+      while (existing.has(candidate)) candidate = `${base}-${suffix++}`;
+      return candidate;
+    }
+    function buildQuickSessionInput(values, now=new Date()) {
+      const classId = String(values.class_id || '').trim();
+      const period = String(values.period || '').trim();
+      const deviceId = String(values.device_id || '').trim();
+      const duration = Number(values.duration_minutes);
+      const lateMinutes = Number(values.late_minutes);
+      const startsAt = values.starts_at ? new Date(values.starts_at) : now;
+      const endsAt = values.ends_at ? new Date(values.ends_at) :
+        new Date(startsAt.getTime() + duration * 60000);
+      const lateAfter = new Date(startsAt.getTime() + lateMinutes * 60000);
+      if (!classId || !period) throw new Error('Bạn cần chọn lớp và tiết học.');
+      if (!deviceId) throw new Error('Chưa có thiết bị. Mở Tùy chọn nâng cao để nhập Device ID.');
+      if (!Number.isInteger(duration) || duration < 1 || duration > 240 ||
+          !Number.isInteger(lateMinutes) || lateMinutes < 0 || lateMinutes > 240 ||
+          !Number.isFinite(startsAt.getTime()) || !Number.isFinite(endsAt.getTime()) ||
+          lateAfter > endsAt || startsAt > endsAt) {
+        throw new Error('Thời gian buổi học không hợp lệ; kiểm tra thời lượng và mốc đi muộn.');
+      }
+      return {
+        session_id:String(values.session_id || '').trim() ||
+          generatedSessionId(classId, period, startsAt),
+        class_id:classId, period, device_id:deviceId,
+        starts_at:startsAt.toISOString(), late_after:lateAfter.toISOString(),
+        ends_at:endsAt.toISOString(), actor:state.actor,
+      };
     }
     function applySessionFilters() {
       const sessionId=fillSessionOptions();
@@ -317,37 +444,54 @@
         confidence.textContent = student.confidence_milli == null ? '—' : `${student.confidence_milli}‰`;
         tr.appendChild(confidence);
         const action = document.createElement('td'); action.className = 'row-actions';
-        const select = document.createElement('select');
-        Object.keys(labels).forEach((value) => {
-          const option = document.createElement('option'); option.value=value;
-          option.textContent=labels[value]; option.selected=value===student.status; select.appendChild(option);
-        });
-        const button = document.createElement('button'); button.textContent='Lưu';
-        button.onclick = () => correct(student, select.value, button);
-        action.append(select,button); tr.appendChild(action); body.appendChild(tr);
+        const button = document.createElement('button'); button.className='secondary';
+        button.textContent='Điều chỉnh'; button.type='button';
+        button.onclick = () => openCorrection(student);
+        action.appendChild(button); tr.appendChild(action); body.appendChild(tr);
       });
     }
-    function correct(student, status, button) {
-      if (state.pending || state.stale || state.mutating) return;
-      if (status === student.status) {
-        showNotice('Trạng thái chưa thay đổi.', 'ok'); return;
-      }
-      const answer = prompt(`Lý do đổi ${student.name} thành “${labels[status]}”:`);
-      if (answer === null) return;
-      const reason = answer.trim();
+    function openCorrection(student) {
+      if (state.pending || state.stale || state.mutating || !state.data.selected_session) return;
+      state.correction = {
+        student_id:student.student_id,
+        session_id:state.data.selected_session.session_id,
+      };
+      byId('correction-title').textContent=`Điều chỉnh: ${student.name}`;
+      const select=byId('correction-status'); select.replaceChildren();
+      Object.keys(labels).forEach((value) => {
+        const option=new Option(labels[value],value); option.selected=value===student.status;
+        select.appendChild(option);
+      });
+      byId('correction-reason').value='';
+      byId('correction-dialog').showModal();
+      select.focus();
+    }
+    function saveCorrection(event) {
+      event.preventDefault();
+      if (state.pending || state.stale || state.mutating || !state.correction ||
+          !state.data || !state.data.selected_session ||
+          state.data.selected_session.session_id !== state.correction.session_id) return;
+      const student=state.data.students.find((row) =>
+        row.student_id === state.correction.student_id);
+      if (!student) { showNotice('Không tìm thấy học sinh trong buổi hiện tại.'); return; }
+      const status=byId('correction-status').value;
+      const reason=byId('correction-reason').value.trim();
+      if (status === student.status) { showNotice('Trạng thái chưa thay đổi.'); return; }
       if (!reason) { showNotice('Bạn cần nhập lý do điều chỉnh.'); return; }
-      button.textContent='Đang lưu…';
+      const button=byId('correction-save'); button.textContent='Đang lưu…';
       setMutating(true);
       showNotice('Đang ghi điều chỉnh…','ok');
       google.script.run.withSuccessHandler((data) => {
+        byId('correction-dialog').close(); state.correction=null;
+        button.textContent='Lưu điều chỉnh';
         renderMutation(data);
         showNotice(`Đã đổi ${student.name} thành “${labels[status]}” và ghi AuditLog.`,'ok');
       }).withFailureHandler((error) => {
-        button.textContent='Lưu';
+        button.textContent='Lưu điều chỉnh';
         setMutating(false);
         fail(error);
       }).recordManualCorrection(state.key, {
-        session_id:state.data.selected_session.session_id, student_id:student.student_id,
+        session_id:state.correction.session_id, student_id:student.student_id,
         status, actor:state.actor, reason,
       });
     }
@@ -383,6 +527,13 @@
     byId('class-filter').onchange = applySessionFilters;
     byId('date-filter').onchange = applySessionFilters;
     byId('student-filter').oninput = renderRows;
+    byId('correction-form').onsubmit = saveCorrection;
+    byId('correction-cancel').onclick = () => {
+      if (!state.mutating) { byId('correction-dialog').close(); state.correction=null; }
+    };
+    byId('correction-dialog').oncancel = (event) => {
+      if (state.mutating) event.preventDefault(); else state.correction=null;
+    };
     byId('refresh').onclick = () => load(byId('session').value);
     byId('export').onclick = exportCsv;
     byId('close-session').onclick = () => {
@@ -405,13 +556,20 @@
     byId('session-form').onsubmit = (event) => {
       event.preventDefault();
       if (state.pending || state.stale || state.mutating) return;
-      const values=Object.fromEntries(new FormData(event.target));
-      ['starts_at','late_after','ends_at'].forEach((key) => values[key]=new Date(values[key]).toISOString());
-      values.actor=state.actor;
+      let values;
+      try {
+        values=buildQuickSessionInput(Object.fromEntries(new FormData(event.target)));
+      } catch (error) {
+        byId('session-advanced').open = true;
+        fail(error);
+        return;
+      }
       setMutating(true);
       showNotice('Đang tạo buổi học…','loading');
       google.script.run.withSuccessHandler((data) => {
-        renderMutation(data); event.target.reset(); showNotice('Đã tạo buổi học.','ok');
+        byId('class-filter').value=''; byId('date-filter').value='';
+        renderMutation(data); event.target.reset(); byId('quick-start').open=false;
+        showNotice('Buổi học đã bắt đầu. Robot sẽ ghi nhận điểm danh tự động.','ok');
       }).withFailureHandler((error) => {
         setMutating(false); fail(error);
       }).createClassSession(state.key,values);

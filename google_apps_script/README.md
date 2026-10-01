@@ -26,6 +26,14 @@ trùng. Payload Phase 1 không có `type` vẫn được hiểu là `attendance`
 Mỗi lần sửa Apps Script cần tạo deployment version mới hoặc cập nhật deployment
 hiện tại. Không đưa `API_TOKEN` vào source control.
 
+Dashboard mới dành cho giáo viên đặt luồng hằng ngày ở đầu trang: chọn buổi,
+xem kết quả, tìm học sinh, chỉnh ngoại lệ và xuất CSV. **Bắt đầu buổi học mới**
+chỉ cần lớp, tiết, thời lượng; mã buổi, giờ bắt đầu và mốc đi muộn 10 phút
+được tự tạo. Thiết bị duy nhất được điền sẵn; nếu chưa có thiết bị hoặc muốn
+đổi giờ/mã buổi, mở **Tùy chọn nâng cao**. Lọc lịch sử và bảng chẩn đoán thiết
+bị nằm trong các mục thu gọn. Thay `Dashboard.html` cần update Web App
+deployment, nhưng không đổi schema Sheet hay `Code.gs` chỉ vì thay giao diện.
+
 ## OTA P2.5
 
 Apps Script chỉ phân phối manifest đã xác thực; file `.bin` được host tại URL

@@ -44,7 +44,7 @@ theo tên thiết bị đoán mò. Kiểm tra trước bằng:
 
     lsblk -o NAME,SIZE,MODEL,FSTYPE,MOUNTPOINTS
 
-Chuẩn bị sáu file MP3 nguồn với tên:
+Chuẩn bị sáu file MP3 câu chung với tên:
 
     ready.mp3
     attendance_success.mp3
@@ -53,10 +53,29 @@ Chuẩn bị sáu file MP3 nguồn với tên:
     enroll_success.mp3
     system_error.mp3
 
-Sau khi Ubuntu tự mount thẻ, chạy:
+DFPlayer Mini chỉ phát file, **không tự đọc tên từ chữ**. Với mỗi học sinh đã
+enroll, chuẩn bị thêm **một file MP3 câu trọn vẹn**: “Xin chào [họ tên], bạn đã
+điểm danh thành công”. Không tách câu thành ba file vì lệnh phát kế tiếp dễ
+cắt ngang file trước. Khuyến nghị mỗi câu dài tối đa khoảng 4 giây; nghe lại
+tên/giọng trước khi chép. Tên file nguồn dùng ID từ robot, không dùng thứ tự
+trên Google Sheet:
+
+    student_0001.mp3    # đúng tên của Student ID 1
+    student_0002.mp3    # đúng tên của Student ID 2
+
+Để lấy mapping ID ↔ tên, vào maintenance portal `http://192.168.4.1/`, bấm
+**Tải danh sách ID làm lời chào** và lưu `student-voice-roster.json` riêng tư.
+Cũng có thể tải từ máy Ubuntu đang nối RobotSetup bằng `curl`:
+
+    curl -fsS http://192.168.4.1/students -o /duong-dan/rieng/student-voice-roster.json
+
+Không commit roster JSON hoặc MP3 tên học sinh lên Git. Khi enroll/xóa/đổi tên,
+phải thu lại câu tương ứng và chuẩn bị lại thẻ; script từ chối roster thiếu
+file hoặc thẻ còn clip ID cũ không thuộc roster. Sau khi Ubuntu tự mount thẻ,
+chạy với **ba tham số**:
 
     cd "$(git rev-parse --show-toplevel)"
-    ./tools/prepare_audio_sd.sh /duong-dan/toi/audio-source /media/$USER/TEN_THE
+    ./tools/prepare_audio_sd.sh /duong-dan/toi/audio-source /media/$USER/TEN_THE /duong-dan/rieng/student-voice-roster.json
     sync
 
 Kết quả bắt buộc:
@@ -67,6 +86,14 @@ Kết quả bắt buộc:
     /mp3/0004.mp3
     /mp3/0005.mp3
     /mp3/0006.mp3
+    /mp3/1001.mp3    # lời chào đầy đủ của Student ID 1
+    /mp3/1002.mp3    # lời chào đầy đủ của Student ID 2
+
+Các ID từ 1 đến 50 được ánh xạ vào `/mp3/1001.mp3` đến `/mp3/1050.mp3`.
+Nếu quên tham số roster, script vẫn cài sáu câu chung để tương thích thẻ cũ
+nhưng cảnh báo rằng lời chào theo tên chưa sẵn sàng. Nếu file tên học sinh
+thiếu khi chạy, firmware cố phát câu chung `/mp3/0002.mp3` khi DFPlayer báo
+lỗi thiếu file; không coi đó là PASS cho yêu cầu đọc đúng tên.
 
 Eject thẻ an toàn rồi mới cắm vào DFPlayer. Không hot-plug microSD khi module
 đang có nguồn.
@@ -84,7 +111,7 @@ firmware version mới lên dashboard.
 
 Thay port nếu symlink của board trỏ sang thiết bị khác. Marker mong đợi:
 
-    === Robot Điểm Danh 3.0.0-phase3-dev ===
+    === Robot Điểm Danh 3.1.0-phase3-ux-dev ===
     Camera OK (VGA, PSRAM)
     P3 audio ready: UART1 TX=GPIO41 RX=GPIO42 enabled=yes volume=18
     DFPlayer responded on UART1
@@ -102,6 +129,9 @@ thanh thực tế là phép kiểm tra cuối cùng.
 3. Mở http://192.168.4.1/config.
 4. Ở phần Âm thanh DFPlayer, bật âm thanh, đặt volume 10 trước và bấm lưu.
 5. Bấm “Phát thử câu điểm danh thành công”.
+6. Nhập Student ID 1 rồi bấm “Phát thử lời chào có tên”; nghe đúng câu trọn
+   vẹn. Lặp lại với ID 2. Nếu nghe câu chung hoặc im lặng, kiểm tra file
+   `1001.mp3`/`1002.mp3` trên thẻ và log `Student greeting ... missing`.
 
 Để test đủ sáu file khi đang nối RobotSetup:
 
@@ -122,11 +152,13 @@ Test persistence:
 ## 6. Full flow hai học sinh
 
 1. Boot normal mode và nghe track 1.
-2. Học sinh A điểm danh: đúng một event local/Sheet và track 2.
-3. A đứng lại trong cooldown: không có event mới và track 3 không spam quá một
-   lần mỗi 5 giây.
-4. Học sinh B điểm danh: đúng một event mới và track 2.
-5. Mở dashboard, xác nhận device online, firmware 3.0.0-phase3-dev và hai
+2. Học sinh A điểm danh: đúng một event local/Sheet; log phát `1001.mp3`, loa
+   nói đầy đủ “Xin chào [tên A], bạn đã điểm danh thành công”.
+3. A đứng lại trong cooldown: không có event mới; duplicate không được cắt
+   ngang lời chào, track 3 không spam.
+4. Học sinh B điểm danh: đúng một event mới; log phát `1002.mp3`, loa nói
+   đúng tên B, không dùng lại lời chào của A.
+5. Mở dashboard, xác nhận device online, firmware 3.1.0-phase3-ux-dev và hai
    attendance đúng session.
 6. Vào maintenance, enroll thử một danh tính test nếu cần: khi commit metadata
    thành công phải phát track 5.
@@ -162,6 +194,8 @@ OTA health gate.
 ## 8. Tiêu chí đóng Phase 3
 
 - đủ sáu track đúng mapping;
+- mỗi Student ID nói đúng tên trong **một câu hoàn chỉnh**, không bị track
+  duplicate cắt ngang; file thiếu chỉ là degraded fallback, không PASS;
 - volume/mute lưu qua reboot;
 - hai học sinh điểm danh và upload đúng một lần;
 - duplicate không spam;

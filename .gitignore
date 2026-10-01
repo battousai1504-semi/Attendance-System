@@ -10,6 +10,9 @@ test-evidence/
 evidence/
 audio-source/
 sd-card/
+*.mp3
+student-voice-roster*.json
+__pycache__/
 *.log
 *.orig
 *.rej

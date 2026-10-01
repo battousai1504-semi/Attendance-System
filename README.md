@@ -6,9 +6,11 @@ khuôn mặt qua Wi-Fi AP, nhận diện tại edge, lưu lịch sử cục bộ
 vững lên Google Sheets.
 
 Trạng thái hiện tại: **tính năng Phase 1–3 đã triển khai; host tests,
-Apps Script tests và ESP-IDF build đều PASS**. Luồng điểm danh sơ bộ với hai
-học sinh đã chạy ổn; nghiệm thu cuối trên board (âm thanh, lỗi mạng, OTA và
-30 phút ổn định) vẫn cần biên bản trước khi gắn nhãn release. Bắt đầu từ
+Apps Script tests và ESP-IDF build đều PASS**. Luồng điểm danh với hai học sinh
+đã chạy ổn. Bản nâng cấp `3.1.0-phase3-ux-dev` thêm lời chào theo Student ID
+và dashboard giáo viên gọn hơn; hai thay đổi mới này vẫn cần test thực tế trên
+board/Web App trước khi gắn nhãn release. OTA/rollback vẫn chưa được nghiệm
+thu vì chưa có HTTPS host cho binary. Bắt đầu từ
 [FULL_SYSTEM_ACCEPTANCE_TEST.md](FULL_SYSTEM_ACCEPTANCE_TEST.md).
 
 ## Luồng hệ thống
@@ -24,10 +26,24 @@ health gate.
 
 DFPlayer Mini dùng UART1 9600 8N1: TX GPIO41 qua điện trở 1 kΩ tới DFPlayer RX,
 RX GPIO42 nhận từ DFPlayer TX; module dùng 5V và GND chung. Loa nối trực tiếp
-giữa SPK1/SPK2. Sáu file nằm trong thư mục /mp3 trên microSD; volume, mute và
-test track có tại maintenance portal. Audio chạy qua queue riêng và luôn là
+giữa SPK1/SPK2. Sáu câu chung và một câu trọn vẹn cho mỗi Student ID nằm trong
+`/mp3` trên microSD (`1001.mp3` ↔ ID 1, …, `1050.mp3` ↔ ID 50). DFPlayer
+không tổng hợp giọng nói từ tên; file lời chào phải được chuẩn bị khi enroll,
+theo [P3_TEST_GUIDE.md](P3_TEST_GUIDE.md). Volume, mute và test track có tại
+maintenance portal. Audio chạy qua queue riêng và luôn là
 ngoại vi optional: lỗi audio không được chặn attendance hay kích hoạt OTA
 rollback.
+
+## Luồng giáo viên hằng ngày
+
+Mở dashboard bằng access key → chọn lớp, tiết và thời lượng rồi bấm **Bắt đầu
+điểm danh**. Hệ thống tự đặt giờ bắt đầu, mốc đi muộn 10 phút, giờ kết thúc và
+mã buổi; chỉ mở **Tùy chọn nâng cao** khi cần sửa. Trong giờ học, xem tổng số
+và danh sách điểm danh, tìm tên, chỉnh trường hợp ngoại lệ kèm lý do. Cuối giờ
+buổi tự đóng theo trigger hoặc giáo viên bấm **Đóng buổi học**, sau đó **Xuất
+CSV**. Lọc buổi cũ và thông số thiết bị vẫn có nhưng được thu gọn khỏi màn
+hình chính. Cấu hình Wi-Fi, enroll và chuẩn bị câu nói tên là việc setup một
+lần của người quản trị, không phải thao tác hằng ngày của giáo viên.
 
 ## Cấu hình runtime
 

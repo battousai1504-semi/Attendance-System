@@ -26,6 +26,9 @@
 #define AUDIO_MODULE_BOOT_MS     1500
 #define AUDIO_MODULE_RESET_MS    1000
 #define AUDIO_TRACK_GUARD_MS     1600
+#define AUDIO_GREETING_GUARD_MS  5000
+#define AUDIO_DUPLICATE_QUIET_MS 6000
+#define AUDIO_RX_POLL_MS         50
 
 #define DFPLAYER_CMD_SET_VOLUME  0x06U
 #define DFPLAYER_CMD_SELECT_SD   0x09U
@@ -50,6 +53,8 @@ typedef enum {
 typedef struct {
     audio_job_type_t type;
     uint16_t track;
+    uint16_t fallback_track;
+    uint16_t guard_ms;
 } audio_job_t;
 
 static const char *TAG = "audio_feedback";
@@ -61,8 +66,12 @@ static audio_feedback_status_t s_status = {
     .volume = AUDIO_FEEDBACK_DEFAULT_VOLUME,
 };
 static TickType_t s_last_event[AUDIO_EVENT_COUNT];
+static TickType_t s_last_success_audio;
 static uint8_t s_rx_stream[64];
 static size_t s_rx_stream_size;
+/* Only audio_task touches these response flags. The UART parser runs there. */
+static bool s_playing_student_track;
+static bool s_student_track_missing;
 
 static uint32_t crc32_bytes(const void *data, size_t length)
 {
@@ -164,6 +173,13 @@ static esp_err_t send_command(uint8_t command, uint16_t parameter,
 
 static void note_valid_response(const dfplayer_frame_t *frame)
 {
+    /* DFPlayer error 5/6 means the requested file index/name is unavailable.
+     * Fall back to the generic success prompt rather than going silent when
+     * an old or incomplete SD card is installed. */
+    if (s_playing_student_track && frame->command == 0x40U &&
+        (frame->parameter == 5U || frame->parameter == 6U)) {
+        s_student_track_missing = true;
+    }
     bool first_response = false;
     taskENTER_CRITICAL(&s_lock);
     if (!s_status.module_responding) first_response = true;
@@ -243,6 +259,55 @@ static TickType_t cooldown_for_event(audio_feedback_event_t event)
     }
 }
 
+static bool student_track_valid(uint16_t track)
+{
+    return track > AUDIO_FEEDBACK_STUDENT_TRACK_BASE &&
+           track <= AUDIO_FEEDBACK_STUDENT_TRACK_LAST;
+}
+
+static bool playable_track_valid(uint16_t track)
+{
+    return (track >= 1U && track <= AUDIO_FEEDBACK_TRACK_COUNT) ||
+           student_track_valid(track);
+}
+
+static void play_job(const audio_job_t *job)
+{
+    /* Drain an earlier track's ACK/finish frames before associating a new
+     * file error with this student. No face-recognition task waits here. */
+    receive_responses(0);
+    s_student_track_missing = false;
+    s_playing_student_track = student_track_valid(job->track);
+    const esp_err_t error = send_command(DFPLAYER_CMD_PLAY_MP3, job->track, true);
+    if (error != ESP_OK) {
+        ESP_LOGW(TAG, "Cannot queue audio track %u: %s",
+                 job->track, esp_err_to_name(error));
+        s_playing_student_track = false;
+        return;
+    }
+    ESP_LOGI(TAG, "Playing /mp3/%04u.mp3", job->track);
+
+    /* A full spoken greeting is a single short MP3. Poll for an immediate
+     * missing-file response while giving it time to finish; the module's
+     * play-finished frame is not consistent across DFPlayer clones. */
+    const uint16_t guard_ms = job->guard_ms != 0 ?
+        job->guard_ms : AUDIO_TRACK_GUARD_MS;
+    for (uint16_t elapsed = 0; elapsed < guard_ms && !s_student_track_missing;
+         elapsed += AUDIO_RX_POLL_MS) {
+        receive_responses(pdMS_TO_TICKS(AUDIO_RX_POLL_MS));
+    }
+    s_playing_student_track = false;
+    if (s_student_track_missing && job->fallback_track != 0) {
+        ESP_LOGW(TAG, "Student greeting %u missing; using generic success track",
+                 job->track);
+        if (send_command(DFPLAYER_CMD_PLAY_MP3, job->fallback_track, true) == ESP_OK) {
+            ESP_LOGI(TAG, "Playing /mp3/%04u.mp3", job->fallback_track);
+            vTaskDelay(pdMS_TO_TICKS(AUDIO_TRACK_GUARD_MS));
+        }
+    }
+    s_student_track_missing = false;
+}
+
 static void audio_task(void *argument)
 {
     (void)argument;
@@ -282,19 +347,8 @@ static void audio_task(void *argument)
                 } else {
                     send_command(DFPLAYER_CMD_PAUSE, 0, true);
                 }
-            } else if (status.enabled && job.track >= 1U &&
-                       job.track <= AUDIO_FEEDBACK_TRACK_COUNT) {
-                const esp_err_t error =
-                    send_command(DFPLAYER_CMD_PLAY_MP3, job.track, true);
-                if (error != ESP_OK) {
-                    ESP_LOGW(TAG, "Cannot queue audio track %u: %s",
-                             job.track, esp_err_to_name(error));
-                } else {
-                    ESP_LOGI(TAG, "Playing /mp3/%04u.mp3", job.track);
-                    /* Only this low-priority audio task waits. The guard keeps
-                     * a following command from cutting off a short prompt. */
-                    vTaskDelay(pdMS_TO_TICKS(AUDIO_TRACK_GUARD_MS));
-                }
+            } else if (status.enabled && playable_track_valid(job.track)) {
+                play_job(&job);
             }
         }
         receive_responses(0);
@@ -314,6 +368,7 @@ esp_err_t audio_feedback_init(void)
     s_status.module_responding = false;
     s_status.dropped_events = 0;
     memset(s_last_event, 0, sizeof(s_last_event));
+    s_last_success_audio = 0;
     taskEXIT_CRITICAL(&s_lock);
 
     const uart_config_t uart_config = {
@@ -364,13 +419,22 @@ bool audio_feedback_notify(audio_feedback_event_t event)
     enabled = s_status.enabled;
     throttled = s_last_event[event] != 0 &&
                 now - s_last_event[event] < cooldown_for_event(event);
+    if (event == AUDIO_EVENT_ATTENDANCE_DUPLICATE &&
+        s_last_success_audio != 0 &&
+        now - s_last_success_audio < pdMS_TO_TICKS(AUDIO_DUPLICATE_QUIET_MS)) {
+        throttled = true;
+    }
     if (enabled && !throttled) s_last_event[event] = now;
+    if (enabled && !throttled && event == AUDIO_EVENT_ATTENDANCE_SUCCESS) {
+        s_last_success_audio = now;
+    }
     taskEXIT_CRITICAL(&s_lock);
     if (!enabled || throttled) return false;
 
     const audio_job_t job = {
         .type = AUDIO_JOB_PLAY,
         .track = track_for_event(event),
+        .guard_ms = AUDIO_TRACK_GUARD_MS,
     };
     if (xQueueSend(s_queue, &job, 0) == pdTRUE) return true;
     taskENTER_CRITICAL(&s_lock);
@@ -378,6 +442,36 @@ bool audio_feedback_notify(audio_feedback_event_t event)
     taskEXIT_CRITICAL(&s_lock);
     ESP_LOGW(TAG, "Audio queue full; event %d dropped", (int)event);
     return false;
+}
+
+bool audio_feedback_notify_attendance(uint16_t student_id)
+{
+    if (student_id == 0 || student_id > AUDIO_FEEDBACK_STUDENT_MAX_ID ||
+        s_queue == NULL) return false;
+    const TickType_t now = xTaskGetTickCount();
+    bool enabled;
+    taskENTER_CRITICAL(&s_lock);
+    enabled = s_status.enabled;
+    taskEXIT_CRITICAL(&s_lock);
+    if (!enabled) return false;
+
+    const audio_job_t job = {
+        .type = AUDIO_JOB_PLAY,
+        .track = AUDIO_FEEDBACK_STUDENT_TRACK_BASE + student_id,
+        .fallback_track = 2U,
+        .guard_ms = AUDIO_GREETING_GUARD_MS,
+    };
+    if (xQueueSend(s_queue, &job, 0) != pdTRUE) {
+        taskENTER_CRITICAL(&s_lock);
+        s_status.dropped_events++;
+        taskEXIT_CRITICAL(&s_lock);
+        ESP_LOGW(TAG, "Audio queue full; greeting for ID=%u dropped", student_id);
+        return false;
+    }
+    taskENTER_CRITICAL(&s_lock);
+    s_last_success_audio = now;
+    taskEXIT_CRITICAL(&s_lock);
+    return true;
 }
 
 esp_err_t audio_feedback_set_config(bool enabled, uint8_t volume)
@@ -407,7 +501,7 @@ void audio_feedback_get_status(audio_feedback_status_t *status)
 
 esp_err_t audio_feedback_test_track(uint16_t track)
 {
-    if (track < 1U || track > AUDIO_FEEDBACK_TRACK_COUNT) {
+    if (!playable_track_valid(track)) {
         return ESP_ERR_INVALID_ARG;
     }
     audio_feedback_status_t status;
@@ -415,6 +509,12 @@ esp_err_t audio_feedback_test_track(uint16_t track)
     if (!status.initialized || !status.enabled || s_queue == NULL) {
         return ESP_ERR_INVALID_STATE;
     }
-    const audio_job_t job = {.type = AUDIO_JOB_PLAY, .track = track};
+    const audio_job_t job = {
+        .type = AUDIO_JOB_PLAY,
+        .track = track,
+        .fallback_track = student_track_valid(track) ? 2U : 0U,
+        .guard_ms = student_track_valid(track) ?
+            AUDIO_GREETING_GUARD_MS : AUDIO_TRACK_GUARD_MS,
+    };
     return xQueueSend(s_queue, &job, 0) == pdTRUE ? ESP_OK : ESP_ERR_TIMEOUT;
 }

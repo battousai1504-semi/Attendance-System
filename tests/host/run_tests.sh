@@ -98,3 +98,4 @@ fi
 "${attendance_node_bin}" "${repo_dir}/tests/host/test_p24_source.js"
 "${attendance_node_bin}" "${repo_dir}/tests/host/test_p25_source.js"
 "${attendance_node_bin}" "${repo_dir}/tests/host/test_p3_source.js"
+python3 "${repo_dir}/tests/host/test_prepare_audio_sd.py"

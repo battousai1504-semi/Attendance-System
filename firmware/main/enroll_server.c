@@ -336,6 +336,8 @@ static const char *INDEX_HTML =
     "<div id='progress'>Đã đăng ký: <b id='count'>0</b> / <span id='capacity'>50</span></div>"
     "<div id='dbwarning' class='err' style='display:none;margin-bottom:12px;padding:10px'></div>"
     "<ol id='students'></ol>"
+    "<button class='config' type='button' onclick='downloadVoiceRoster()'>⬇ Tải danh sách ID làm lời chào</button>"
+    "<p style='color:#94a3b8'>File này có tên học sinh; giữ riêng tư và không đưa lên Git.</p>"
     "<label>Họ tên học sinh</label>"
     "<input id='name' type='text' placeholder='Nguyễn Văn A' autocomplete='off'>"
     "<label>Lớp</label>"
@@ -357,6 +359,13 @@ static const char *INDEX_HTML =
     "var list=document.getElementById('students');list.textContent='';"
     "j.students.forEach(function(s){var li=document.createElement('li');"
     "li.textContent='ID '+s.id+': '+s.name+(s.class?' — '+s.class:'');list.appendChild(li)})}catch(e){}}"
+    "async function downloadVoiceRoster(){try{var r=await fetch('/students');var j=await r.json();"
+    "if(!r.ok||!j.ok||!j.consistent||!j.students.length)throw new Error('Danh sách chưa sẵn sàng');"
+    "var url=URL.createObjectURL(new Blob([JSON.stringify(j,null,2)],{type:'application/json'}));"
+    "var a=document.createElement('a');a.href=url;a.download='student-voice-roster.json';a.click();"
+    "setTimeout(function(){URL.revokeObjectURL(url)},1000);"
+    "showStatus('Đã tải danh sách ID để chuẩn bị lời chào trên thẻ SD.',true)"
+    "}catch(e){showStatus('Không tải được danh sách ID: '+e.message,false)}}"
     "async function doEnroll(){"
     "  var nameInput=document.getElementById('name');var name=nameInput.value.trim();"
     "  var cls=document.getElementById('cls').value.trim();"
@@ -431,6 +440,9 @@ static const char *CONFIG_HTML =
     "oninput='document.getElementById(\"audioVolumeValue\").textContent=this.value'>"
     "<button class='primary' type='button' onclick='saveAudio()'>Lưu cấu hình âm thanh</button>"
     "<button class='secondary' type='button' onclick='testAudio()'>Phát thử câu điểm danh thành công</button>"
+    "<label>Thử lời chào theo Student ID (1–50)</label>"
+    "<input id='audioStudentId' type='number' min='1' max='50' placeholder='Ví dụ: 1'>"
+    "<button class='secondary' type='button' onclick='testStudentAudio()'>Phát thử lời chào có tên</button>"
     "<p class='hint'>Nếu UART đã sẵn sàng nhưng module chưa phản hồi, kiểm tra thẻ microSD, "
     "nguồn 5V, GND chung và hai dây TX/RX đấu chéo.</p>"
     "<a class='link secondary' href='/'>Quay lại đăng ký khuôn mặt</a></div><script>"
@@ -478,6 +490,12 @@ static const char *CONFIG_HTML =
     "show('Đã lưu cấu hình âm thanh.',true);await refreshAudio()}catch(e){show(e.message,false)}}"
     "async function testAudio(){try{await jsonFetch('/audio/test',{method:'POST',body:new URLSearchParams({track:'2'})});"
     "show('Đã gửi lệnh phát /mp3/0002.mp3.',true);setTimeout(refreshAudio,500)}catch(e){show(e.message,false)}}"
+    "async function testStudentAudio(){const id=Number(document.getElementById('audioStudentId').value);"
+    "if(!Number.isInteger(id)||id<1||id>50){show('Nhập Student ID từ 1 đến 50.',false);return;}"
+    "const track=1000+id;try{await jsonFetch('/audio/test',{method:'POST',"
+    "body:new URLSearchParams({track:String(track)})});"
+    "show('Đã gửi lệnh phát /mp3/'+String(track).padStart(4,'0')+'.mp3.',true);"
+    "setTimeout(refreshAudio,500)}catch(e){show(e.message,false)}}"
     "refresh();refreshAudio();</script></body></html>";
 
 /* ─── GET / ──────────────────────────────────────────────────── */
@@ -748,14 +766,16 @@ static esp_err_t handler_audio_test(httpd_req_t *req)
     if (read_request_body(req, &body, 64) != ESP_OK) {
         return send_config_error(req, "invalid_audio_test");
     }
-    char track_text[4] = {0};
+    char track_text[6] = {0};
     const bool parsed =
         form_get_value(body, "track", track_text, sizeof(track_text));
     free(body);
     char *end = NULL;
     const long track = parsed ? strtol(track_text, &end, 10) : -1;
     if (!parsed || end == track_text || *end != '\0' ||
-        track < 1 || track > AUDIO_FEEDBACK_TRACK_COUNT) {
+        !((track >= 1 && track <= AUDIO_FEEDBACK_TRACK_COUNT) ||
+          (track > AUDIO_FEEDBACK_STUDENT_TRACK_BASE &&
+           track <= AUDIO_FEEDBACK_STUDENT_TRACK_LAST))) {
         return send_config_error(req, "invalid_audio_track");
     }
     if (audio_feedback_test_track((uint16_t)track) != ESP_OK) {
