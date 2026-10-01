@@ -20,7 +20,9 @@ jobs:
         run: bash tests/host/run_tests.sh
 
       - name: Run Google Apps Script contract tests
-        run: node tests/apps_script/test_code.js
+        run: |
+          node tests/apps_script/test_code.js
+          node tests/apps_script/test_dashboard_html.js
 
   build:
     runs-on: ubuntu-latest
@@ -32,17 +34,23 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v4
 
-      - name: Create CI-only deployment configuration
-        run: |
-          cp main/wifi_time_config.h.example main/wifi_time_config.h
-          cp main/cloud_config.h.example main/cloud_config.h
-
       - name: Build ESP32-S3 firmware
         run: idf.py build
 
-      - name: Upload firmware binary
+      - name: Package OTA release artifact
+        run: >-
+          ../tools/package_ota.sh
+          3.0.0-phase3-dev
+          https://example.invalid/robot_attendance.bin
+          build/robot_attendance.bin
+          build/ota-manifest.template.json
+
+      - name: Upload firmware release artifact
         uses: actions/upload-artifact@v4
         with:
           name: robot-attendance-${{ github.sha }}
-          path: firmware/build/robot_attendance.bin
+          path: |
+            firmware/build/robot_attendance.bin
+            firmware/build/robot_attendance.sha256
+            firmware/build/ota-manifest.template.json
           if-no-files-found: error

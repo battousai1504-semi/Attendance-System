@@ -1,9 +1,24 @@
 # Local deployment secrets
 firmware/main/wifi_time_config.h
 firmware/main/cloud_config.h
+*.env
+.env.*
+!.env.example
+
+# Local evidence can contain faces, names, serial IDs and credentials
+test-evidence/
+evidence/
+audio-source/
+sd-card/
+*.log
+*.orig
+*.rej
+*.bin
+*.sha256
 
 # ESP-IDF generated files
 firmware/build/
+firmware/build-*/
 firmware/.cache/
 firmware/managed_components/
 firmware/sdkconfig.old

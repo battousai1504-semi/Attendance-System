@@ -42,7 +42,7 @@ Các chân onboard khác:
 |---|---:|---|
 | LED trạng thái đơn | 2 | LED cạnh chữ `IO2`, firmware dùng LED này |
 | RGB LED | 48 | WS2812; không điều khiển bằng mức HIGH/LOW thông thường |
-| BOOT / maintenance | 0 | Giữ 2,5 giây lúc app khởi động để mở enrollment |
+| BOOT / maintenance | 0 | Giữ 2,5 giây khi app đang chạy; board tự restart vào enrollment |
 | USB-UART | TX 43, RX 44 | Nối sẵn tới chip USB-UART trên board |
 | USB-OTG | D- 19, D+ 20 | Nối sẵn tới cổng USB native |
 
@@ -113,7 +113,7 @@ bỏ toàn bộ Clang/RISC-V.
 Chỉ chuyển sang build khi repair thành công và `idf.py --version` xác nhận
 `ESP-IDF v6.0.2`. Tham khảo cú pháp [EIM CLI chính thức](https://docs.espressif.com/projects/idf-im-ui/en/latest/cli_commands.html).
 
-Đã kiểm tra trực tiếp trên Dang-Laptop ngày 2026-09-15: repair với lệnh trên
+Đã kiểm tra trực tiếp trên Ubuntu ngày 2026-09-15: repair với lệnh trên
 hoàn tất, EIM có trạng thái `finished` và đường dẫn activation script hợp lệ;
 `idf.py --version` trả về `ESP-IDF v6.0.2`, compiler Xtensa chạy được và
 `python -m pip check` báo `No broken requirements found.` Đây là kiểm tra
@@ -143,28 +143,28 @@ bridge khác có thể là `/dev/ttyUSB0`. Dùng đúng port vừa xuất hiện
 Chỉ cần symlink trong `/dev/serial/by-id/` đã trỏ tới một `/dev/tty*` là đủ;
 không cần cài `pyserial` chỉ để chạy lệnh kiểm tra tùy chọn trên.
 
-## 5. Tạo cấu hình local
+## 5. Cấu hình runtime từ P2.3
 
-```bash
-cd /home/battousai1504/VScode/Projects/Attendance-System/firmware/main
-cp wifi_time_config.h.example wifi_time_config.h
-cp cloud_config.h.example cloud_config.h
-```
+Không tạo hoặc sửa header chứa Wi-Fi/cloud secret nữa. Firmware build trực tiếp
+từ repository, sau đó nhận cấu hình tại `http://192.168.4.1/config`:
 
-Sửa hai file vừa tạo:
+- Wi-Fi 2,4 GHz và mật khẩu;
+- Apps Script URL kết thúc bằng `/exec`;
+- device ID;
+- device secret 32–127 ký tự đã provision trong Apps Script.
 
-- `wifi_time_config.h`: Wi-Fi 2,4 GHz, SSID và mật khẩu thật.
-- `cloud_config.h`: Apps Script URL kết thúc bằng `/exec`, token ngẫu nhiên ít
-  nhất 32 ký tự, device ID và mật khẩu enrollment AP dài 8–63 ký tự.
-
-Hai file này bị Git bỏ qua và không được commit.
+Khi chưa có cấu hình, board mở AP `RobotSetup` với mật khẩu
+`RobotSetup-2026`. Khi đã có cấu hình, giữ BOOT 2,5 giây lúc ứng dụng đang chạy;
+mật khẩu maintenance AP là `Cfg-` cộng 12 ký tự đầu của device secret. Portal
+chỉ kích hoạt cấu hình mới sau khi test Wi-Fi, NTP và authenticated heartbeat.
+Các file local legacy vẫn bị Git ignore nhưng firmware không còn include chúng.
 
 ## 6. Build và flash lần đầu
 
 Từ ESP-IDF shell:
 
 ```bash
-cd /home/battousai1504/VScode/Projects/Attendance-System/firmware
+cd "$(git rev-parse --show-toplevel)/firmware"
 idf.py set-target esp32s3
 idf.py build
 ```
@@ -185,7 +185,9 @@ idf.py -p /dev/ttyACM0 flash monitor
 ```
 
 Không dùng `erase-flash` cho update thường vì nó xóa face embeddings, danh sách
-học sinh, lịch sử local và upload outbox. Thoát monitor bằng `Ctrl+]`.
+học sinh, lịch sử local và upload outbox. Khi chuyển P2.4 → P2.5, lệnh `flash`
+tự ghi partition table OTA và `ota_data_initial.bin`; NVS và `faces` giữ đúng
+offset cũ nên vẫn tuyệt đối không erase. Thoát monitor bằng `Ctrl+]`.
 
 Nếu USB-UART không tự vào download mode:
 
@@ -194,8 +196,9 @@ Nếu USB-UART không tự vào download mode:
 3. Thả `BOOT`.
 4. Chạy lại lệnh flash.
 
-Đừng tiếp tục giữ BOOT khi app đã chạy, nếu không firmware sẽ hiểu là yêu cầu
-mở maintenance enrollment.
+Đây chỉ là thao tác ép chip vào ROM download mode để flash khi auto-reset lỗi.
+Sau khi flash xong phải thả BOOT. Maintenance của ứng dụng dùng quy trình khác
+ở mục E bên dưới.
 
 ## 7. Quy trình smoke test trên board
 
@@ -204,7 +207,7 @@ mở maintenance enrollment.
 Sau `flash monitor`, chờ các marker:
 
 ```text
-Robot Điểm Danh 1.2.1-phase1-rc1
+Robot Điểm Danh 3.0.0-phase3-dev
 Camera OK (VGA, PSRAM)
 student_db ready
 Face models ready
@@ -213,10 +216,18 @@ Face models ready
 Pass khi không có `Camera init failed`, panic, brownout hoặc reset loop. Nếu có
 lỗi camera, rút USB trước rồi kiểm tra lại cáp FPC và lẫy socket.
 
-### B. Enrollment lần đầu
+### B. Provisioning và enrollment lần đầu
 
-Thiết bị sạch tự mở enrollment AP. Điện thoại/laptop kết nối SSID đã cấu hình;
-nếu thiết bị báo Wi-Fi không có Internet, chọn giữ kết nối. Mở:
+Thiết bị chưa có runtime config tự mở AP `RobotSetup`; kết nối bằng mật khẩu
+bootstrap `RobotSetup-2026`. Nếu thiết bị báo Wi-Fi không có Internet, chọn giữ
+kết nối. Cấu hình Wi-Fi/cloud tại:
+
+```text
+http://192.168.4.1/config
+```
+
+Sau khi test và lưu thành công, robot restart. Nếu chưa có khuôn mặt, kết nối
+lại AP bằng mật khẩu `Cfg-` cộng 12 ký tự đầu của device secret rồi mở:
 
 ```text
 http://192.168.4.1
@@ -247,12 +258,15 @@ bật Wi-Fi lại và xác nhận pending event chỉ xuất hiện một lần 
 
 ### E. Reboot và maintenance
 
-Nhấn `RST` bình thường: danh tính phải còn và board vào recognition. Để mở lại
-enrollment mà không xóa dữ liệu, giữ `BOOT`, nhấn/thả `RST`, tiếp tục giữ BOOT
-ít nhất 2,5 giây rồi thả khi log báo maintenance enrollment.
+Nhấn `RST` bình thường: danh tính và runtime config phải còn, board vào
+recognition. Để mở maintenance portal mà không xóa dữ liệu, đợi recognition
+chạy rồi giữ `BOOT` liên tục ít nhất 2,5 giây. Board ghi cờ maintenance vào NVS,
+tự restart và mở AP. Từ P2.3, cờ được giữ cho đến khi người dùng chủ động rời
+portal; reset bất ngờ không được phép làm mất AP. Không nhấn `RST` trong lúc giữ BOOT vì đó là thao tác vào
+ROM download mode.
 
 Checklist nghiệm thu đầy đủ và các bài power-loss/TLS nằm trong
-`PHASE1_TEST_GUIDE.md`.
+`P2_2_P2_3_FULL_FLOW_TEST_GUIDE.md`.
 
 ## Nguồn đối chiếu phần cứng
 
@@ -260,3 +274,12 @@ Checklist nghiệm thu đầy đủ và các bài power-loss/TLS nằm trong
 - [Camera pinout tương thích ESP32S3_EYE](https://github.com/Freenove/Freenove_ESP32_S3_WROOM_Board/blob/main/C/Sketches/Sketch_07.2_As_VideoWebServer/camera_pins.h)
 - [Phân biệt USB-UART và USB-OTG](https://docs.freenove.com/projects/fnk0082/en/latest/fnk0082/codes/C/35_USB.html)
 - [ESP-IDF: build, flash và monitor trên Linux](https://docs.espressif.com/projects/esp-idf/en/stable/esp32s3/get-started/linux-macos-start-project.html)
+
+## Phase 3 — DFPlayer Mini và loa
+
+GPIO41/42 đã được dành riêng cho UART1 audio. Kết nối bắt buộc: 5V → VCC,
+GND → GND, GPIO41/TX qua điện trở 1 kΩ → DFPlayer RX, GPIO42/RX ← DFPlayer TX;
+loa nằm giữa SPK1 và SPK2. Không dùng GPIO19/20 hoặc cặp chân TX/RX của console.
+
+Toàn bộ mapping sáu file, chuẩn bị FAT32 trên Ubuntu, flash không xóa dữ liệu,
+portal volume/mute và fault test nằm trong P3_TEST_GUIDE.md.

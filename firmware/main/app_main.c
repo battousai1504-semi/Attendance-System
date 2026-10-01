@@ -19,9 +19,11 @@
 #include "esp_camera.h"
 #include "esp_err.h"
 #include "esp_event.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_netif.h"
 #include "esp_partition.h"
+#include "esp_psram.h"
 #include "esp_spiffs.h"
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
@@ -29,30 +31,49 @@
 #include "nvs_flash.h"
 
 #include "attendance.h"
+#include "audio_feedback.h"
+#include "app_version.h"
 #include "board_pins.h"
-#include "cloud_config.h"
+#include "device_config.h"
 #include "enroll_server.h"
 #include "face_engine.h"
 #include "http_upload.h"
+#include "maintenance_mode.h"
 #include "manual_clock.h"
+#include "ota_manager.h"
 #include "student_db.h"
 #include "wifi_time.h"
 
 /* ─── Cấu hình ───────────────────────────────────────────────── */
-
-/* WiFi để kết nối Internet/NTP và upload lên GAS.
- * Tạo file wifi_time_config.h từ wifi_time_config.h.example trước khi build. */
-#include "wifi_time_config.h"
 
 /* Đường dẫn SPIFFS để lưu face database */
 #define FACE_DB_PATH    "/spiffs"
 
 /* Thời gian chờ WiFi kết nối và NTP đặt đồng hồ hệ thống (ms). */
 #define NETWORK_TIME_READY_TIMEOUT_MS  30000
-#define FIRMWARE_VERSION                "1.2.1-phase1-rc1"
-
+#define CAMERA_RECOVERY_THRESHOLD       3
+#define CAMERA_RECOVERY_DELAY_MS        250
 static const char *TAG = "app_main";
 static bool s_upload_enabled;
+static device_config_values_t s_device_config;
+static device_config_status_t s_device_config_status;
+
+static const char *reset_reason_name(esp_reset_reason_t reason)
+{
+    switch (reason) {
+        case ESP_RST_POWERON: return "power-on";
+        case ESP_RST_EXT: return "external-pin";
+        case ESP_RST_SW: return "software";
+        case ESP_RST_PANIC: return "panic";
+        case ESP_RST_INT_WDT: return "interrupt-watchdog";
+        case ESP_RST_TASK_WDT: return "task-watchdog";
+        case ESP_RST_WDT: return "watchdog";
+        case ESP_RST_DEEPSLEEP: return "deep-sleep";
+        case ESP_RST_BROWNOUT: return "brownout";
+        case ESP_RST_SDIO: return "sdio";
+        default: return "unknown";
+    }
+}
 
 /* ─── LED trạng thái ─────────────────────────────────────────── */
 static void led_init(void)
@@ -80,58 +101,14 @@ static void led_blink(int times, int delay_ms)
     }
 }
 
-static bool enrollment_button_held(void)
-{
-    gpio_config_t cfg = {
-        .pin_bit_mask = (1ULL << ENROLL_BUTTON_GPIO),
-        .mode = GPIO_MODE_INPUT,
-        .pull_up_en = GPIO_PULLUP_ENABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-    };
-    if (gpio_config(&cfg) != ESP_OK ||
-        gpio_get_level(ENROLL_BUTTON_GPIO) != ENROLL_BUTTON_ACTIVE_LEVEL) {
-        return false;
-    }
-
-    ESP_LOGI(TAG, "BOOT button detected; keep holding to enter enrollment");
-    for (int elapsed = 0; elapsed < ENROLL_BUTTON_HOLD_MS; elapsed += 50) {
-        if (gpio_get_level(ENROLL_BUTTON_GPIO) != ENROLL_BUTTON_ACTIVE_LEVEL) {
-            ESP_LOGI(TAG, "BOOT button released before enrollment threshold");
-            return false;
-        }
-        vTaskDelay(pdMS_TO_TICKS(50));
-    }
-    ESP_LOGW(TAG, "Maintenance enrollment requested with BOOT button");
-    return true;
-}
-
 static void fatal_error_loop(const char *reason)
 {
+    ota_manager_reject_pending_image(reason);
     ESP_LOGE(TAG, "FATAL: %s; device stopped in safe mode", reason);
     while (true) {
         led_blink(5, 150);
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
-}
-
-static bool cloud_config_valid(void)
-{
-    if (strncmp(CDP_GAS_URL, "https://script.google.com/macros/s/", 35) != 0 ||
-        strstr(CDP_GAS_URL, "YOUR_DEPLOYMENT_ID") != NULL ||
-        strstr(CDP_GAS_URL, "/exec") == NULL || strlen(CDP_GAS_TOKEN) < 32 ||
-        strstr(CDP_GAS_TOKEN, "replace-with") != NULL ||
-        CDP_DEVICE_ID[0] == '\0') {
-        return false;
-    }
-    for (const unsigned char *p = (const unsigned char *)CDP_DEVICE_ID;
-         *p != '\0'; p++) {
-        const bool allowed = (*p >= 'a' && *p <= 'z') ||
-                             (*p >= 'A' && *p <= 'Z') ||
-                             (*p >= '0' && *p <= '9') || *p == '.' ||
-                             *p == '_' || *p == ':' || *p == '-';
-        if (!allowed) return false;
-    }
-    return true;
 }
 
 /* ─── Khởi tạo Camera ────────────────────────────────────────── */
@@ -252,7 +229,8 @@ static void on_recognized(const face_engine_result_t *result)
             rec.student_id       = (uint16_t)result->id;
             rec.confidence_milli = result->similarity_milli;
             snprintf(rec.event_id, sizeof(rec.event_id), "%s", entry.event_id);
-            snprintf(rec.device_id, sizeof(rec.device_id), "%s", CDP_DEVICE_ID);
+            snprintf(rec.device_id, sizeof(rec.device_id), "%s",
+                     s_device_config.device_id);
             snprintf(rec.name, sizeof(rec.name), "%s", name);
             snprintf(rec.class_name, sizeof(rec.class_name), "%s", class_name);
             snprintf(rec.timestamp, sizeof(rec.timestamp), "%s", entry.timestamp);
@@ -274,15 +252,18 @@ static void on_recognized(const face_engine_result_t *result)
             return;
         }
         if (upload_staged) http_upload_notify();
+        audio_feedback_notify(AUDIO_EVENT_ATTENDANCE_SUCCESS);
 
         led_blink(2, 150);   /* 2 nháy nhanh = thành công */
         ESP_LOGI(TAG, "✅ ĐIỂM DANH: %s (%s) conf=%d‰",
                  name, class_name, result->similarity_milli);
 
     } else if (att == ATTENDANCE_DUPLICATE) {
+        audio_feedback_notify(AUDIO_EVENT_ATTENDANCE_DUPLICATE);
         led_blink(1, 100);   /* 1 nháy = duplicate */
         ESP_LOGI(TAG, "⏭ Duplicate: %s (cooldown)", name);
     } else if (att == ATTENDANCE_TIME_UNAVAILABLE) {
+        audio_feedback_notify(AUDIO_EVENT_TIME_UNAVAILABLE);
         led_blink(3, 200);   /* 3 nháy chậm = chờ NTP */
         ESP_LOGW(TAG, "⏳ Chờ đồng bộ giờ NTP...");
     }
@@ -294,9 +275,19 @@ static void recognize_loop(void)
     ESP_LOGI(TAG, "=== Bắt đầu vòng lặp điểm danh ===");
     led_set(true);   /* LED sáng liên tục = đang hoạt động */
 
+    int consecutive_camera_errors = 0;
     while (true) {
+        if (ota_manager_busy()) {
+            led_set(false);
+            vTaskDelay(pdMS_TO_TICKS(500));
+            continue;
+        }
+        led_set(true);
         face_engine_result_t result = face_engine_recognize();
 
+        if (result.state != FACE_ENGINE_ERROR) {
+            consecutive_camera_errors = 0;
+        }
         switch (result.state) {
         case FACE_ENGINE_MATCH:
             on_recognized(&result);
@@ -319,10 +310,31 @@ static void recognize_loop(void)
             /* Recognize mode tự chọn khuôn mặt lớn nhất; trạng thái này chỉ dùng khi enroll. */
             break;
 
-        case FACE_ENGINE_ERROR:
-            ESP_LOGE(TAG, "Camera/face engine error");
-            vTaskDelay(pdMS_TO_TICKS(1000));
+        case FACE_ENGINE_ERROR: {
+            consecutive_camera_errors++;
+            ESP_LOGW(TAG, "Camera frame pipeline failed (%d/%d)",
+                     consecutive_camera_errors, CAMERA_RECOVERY_THRESHOLD);
+            if (consecutive_camera_errors >= CAMERA_RECOVERY_THRESHOLD) {
+                ESP_LOGW(TAG, "Reinitializing camera after repeated frame failures");
+                const esp_err_t deinit_error = esp_camera_deinit();
+                if (deinit_error != ESP_OK) {
+                    ESP_LOGW(TAG, "Camera deinit returned: %s",
+                             esp_err_to_name(deinit_error));
+                }
+                vTaskDelay(pdMS_TO_TICKS(CAMERA_RECOVERY_DELAY_MS));
+                const esp_err_t init_error = init_camera();
+                if (init_error == ESP_OK) {
+                    ESP_LOGI(TAG, "Camera recovery succeeded");
+                } else {
+                    ESP_LOGE(TAG, "Camera recovery failed: %s",
+                             esp_err_to_name(init_error));
+                    audio_feedback_notify(AUDIO_EVENT_SYSTEM_ERROR);
+                }
+                consecutive_camera_errors = 0;
+            }
+            vTaskDelay(pdMS_TO_TICKS(500));
             break;
+        }
         }
 
         vTaskDelay(pdMS_TO_TICKS(100));  /* ~10 fps max */
@@ -332,10 +344,12 @@ static void recognize_loop(void)
 /* ─── Entry point ────────────────────────────────────────────── */
 void app_main(void)
 {
-    ESP_LOGI(TAG, "=== Robot Điểm Danh %s ===", FIRMWARE_VERSION);
+    ESP_LOGI(TAG, "=== Robot Điểm Danh %s ===", CDP_FIRMWARE_VERSION);
+    const esp_reset_reason_t reset_reason = esp_reset_reason();
+    ESP_LOGI(TAG, "Reset reason: %s (%d)", reset_reason_name(reset_reason),
+             (int)reset_reason);
     manual_clock_init();
     led_init();
-    const bool maintenance_enrollment = enrollment_button_held();
     led_blink(3, 100);   /* 3 nháy nhanh khi boot */
 
     /* NVS (cần cho WiFi và student_db) */
@@ -348,6 +362,14 @@ void app_main(void)
     if (nvs_ret != ESP_OK) {
         fatal_error_loop("NVS initialization failed");
     }
+    const esp_err_t config_load_error =
+        device_config_load(&s_device_config, &s_device_config_status);
+    bool config_ready = config_load_error == ESP_OK;
+    if (!config_ready) {
+        ESP_LOGW(TAG, "No valid runtime network/cloud configuration; maintenance portal required");
+    }
+    const bool maintenance_requested =
+        maintenance_mode_enrollment_requested();
 
     /* Khởi tạo network interface và event loop — chỉ gọi 1 lần, dùng chung cho cả AP và STA */
     ESP_ERROR_CHECK(esp_netif_init());
@@ -359,8 +381,15 @@ void app_main(void)
     /* Student DB */
     ESP_ERROR_CHECK(student_db_init());
 
+    if (!esp_psram_is_initialized() ||
+        heap_caps_get_total_size(MALLOC_CAP_SPIRAM) == 0) {
+        fatal_error_loop("PSRAM health check failed");
+    }
+
     /* Camera */
-    ESP_ERROR_CHECK(init_camera());
+    if (init_camera() != ESP_OK) {
+        fatal_error_loop("camera initialization failed");
+    }
 
     /* Face engine (model AI) */
     if (face_engine_init(FACE_DB_PATH) != 0) {
@@ -376,34 +405,74 @@ void app_main(void)
                  student_count, enrolled_faces);
     }
 
+    /* A dedicated non-release image lets the hardware test prove rollback
+     * without corrupting a real build. It intentionally fails before VALID. */
+#ifdef CDP_OTA_ROLLBACK_TEST
+    fatal_error_loop("intentional P2.5 rollback test image");
+#endif
+
+    /* NVS, SPIFFS, PSRAM, camera and face engine are all usable. Only now may
+     * a first-boot OTA image cancel automatic rollback. */
+    ota_manager_confirm_running_image();
+
+    /* Audio is deliberately outside the OTA health gate: a missing DFPlayer,
+     * speaker or SD card must never roll back otherwise healthy firmware. */
+    const esp_err_t audio_error = audio_feedback_init();
+    if (audio_error != ESP_OK) {
+        ESP_LOGW(TAG, "DFPlayer audio disabled for this boot: %s",
+                 esp_err_to_name(audio_error));
+    }
+
     /* Một buổi đăng ký chỉ kết thúc khi giáo viên bấm nút hoàn tất. Nếu mất
      * điện giữa buổi, robot mở lại AP và tiếp tục từ danh sách đã lưu. */
     bool enrollment_complete = student_db_is_enrollment_complete();
-    if (enrolled_faces == 0 || !enrollment_complete || maintenance_enrollment ||
-        !identity_db_consistent) {
-        if (strstr(CDP_ENROLL_AP_PASSWORD, "replace-with") != NULL) {
-            fatal_error_loop("change the default enrollment AP password");
+    if (!config_ready || enrolled_faces == 0 || !enrollment_complete ||
+        maintenance_requested || !identity_db_consistent) {
+        char setup_ap_password[20] = {0};
+        if (config_ready) {
+            snprintf(setup_ap_password, sizeof(setup_ap_password), "Cfg-%.12s",
+                     s_device_config.device_secret);
+        } else {
+            snprintf(setup_ap_password, sizeof(setup_ap_password), "%s",
+                     DEVICE_SETUP_AP_PASSWORD);
         }
-        ESP_LOGI(TAG, "Enrollment session active: faces=%d complete=%s",
+        ESP_LOGI(TAG, "Maintenance session active: faces=%d enrollment_complete=%s",
                  enrolled_faces, enrollment_complete ? "yes" : "no");
-        ESP_LOGI(TAG, "Kết nối WiFi enrollment '%s' rồi mở http://192.168.4.1",
-                 CDP_ENROLL_AP_SSID);
-        esp_err_t enroll_err = enroll_server_start(CDP_ENROLL_AP_SSID,
-                                                    CDP_ENROLL_AP_PASSWORD);
+        ESP_LOGI(TAG, "Maintenance portal active at http://192.168.4.1 on SSID '%s'",
+                 DEVICE_SETUP_AP_SSID);
+        esp_err_t enroll_err = enroll_server_start(DEVICE_SETUP_AP_SSID,
+                                                    setup_ap_password);
+        memset(setup_ap_password, 0, sizeof(setup_ap_password));
         if (enroll_err == ESP_OK) {
             while (!enroll_server_done()) {
                 vTaskDelay(pdMS_TO_TICKS(500));
             }
+            const bool restart_requested = enroll_server_restart_requested();
+            const esp_err_t clear_error =
+                maintenance_mode_clear_enrollment_request();
+            if (clear_error != ESP_OK) {
+                ESP_LOGE(TAG, "Không thể xóa cờ maintenance: %s",
+                         esp_err_to_name(clear_error));
+            }
             enroll_err = enroll_server_stop();
             if (enroll_err != ESP_OK) {
-                ESP_LOGE(TAG, "Dừng enrollment mode lỗi: %s", esp_err_to_name(enroll_err));
+                ESP_LOGE(TAG, "Dừng maintenance portal lỗi: %s", esp_err_to_name(enroll_err));
+            }
+            if (restart_requested) {
+                ESP_LOGI(TAG, "Restarting to activate the selected runtime configuration");
+                vTaskDelay(pdMS_TO_TICKS(300));
+                esp_restart();
             }
             ESP_LOGI(TAG, "Đã đăng ký %d khuôn mặt. Chuyển sang chế độ điểm danh.",
                      face_engine_get_enrolled_count());
         } else {
-            ESP_LOGE(TAG, "Không thể mở enrollment mode: %s", esp_err_to_name(enroll_err));
-            fatal_error_loop("enrollment server failed to start");
+            ESP_LOGE(TAG, "Không thể mở maintenance portal: %s", esp_err_to_name(enroll_err));
+            fatal_error_loop("maintenance server failed to start");
         }
+    }
+
+    if (device_config_load(&s_device_config, &s_device_config_status) != ESP_OK) {
+        fatal_error_loop("runtime configuration is unavailable");
     }
 
     /* WiFi Station + NTP (chạy nền) */
@@ -411,7 +480,8 @@ void app_main(void)
     if (attendance_err != ESP_OK) {
         ESP_LOGE(TAG, "Attendance storage unavailable: %s", esp_err_to_name(attendance_err));
     }
-    esp_err_t wifi_err = wifi_time_start();
+    esp_err_t wifi_err = wifi_time_start(s_device_config.wifi_ssid,
+                                         s_device_config.wifi_password);
 
     /* Chờ WiFi kết nối và NTP đồng bộ. Uploader vẫn tự chờ ở nền nếu mạng
      * chậm hơn khoảng thời gian khởi động này. */
@@ -431,16 +501,34 @@ void app_main(void)
     }
 
     /* HTTP Upload đến Google Apps Script */
-    if (cloud_config_valid()) {
-        esp_err_t upload_err = http_upload_init(CDP_GAS_URL, CDP_GAS_TOKEN);
+    if (device_config_values_valid(&s_device_config)) {
+        esp_err_t upload_err = http_upload_init(s_device_config.gas_url,
+                                                s_device_config.device_secret,
+                                                s_device_config.device_id);
         s_upload_enabled = upload_err == ESP_OK;
         if (!s_upload_enabled) {
             ESP_LOGE(TAG, "Không thể khởi tạo uploader: %s", esp_err_to_name(upload_err));
+        } else {
+            const esp_err_t ota_error = ota_manager_start();
+            if (ota_error != ESP_OK) {
+                ESP_LOGE(TAG, "Không thể khởi tạo OTA manager: %s",
+                         esp_err_to_name(ota_error));
+            }
         }
     } else {
         ESP_LOGW(TAG, "Cloud URL/token/device ID chưa hợp lệ — upload bị tắt");
     }
 
+    /* GPIO0 is monitored only after normal boot. Holding it here writes a
+     * latched NVS flag and restarts into enrollment, avoiding ROM download
+     * mode caused by holding BOOT during RESET. */
+    esp_err_t maintenance_err = maintenance_mode_start();
+    if (maintenance_err != ESP_OK) {
+        ESP_LOGE(TAG, "Không thể bật nút maintenance: %s",
+                 esp_err_to_name(maintenance_err));
+    }
+
     /* Vòng lặp điểm danh vô tận */
+    audio_feedback_notify(AUDIO_EVENT_SYSTEM_READY);
     recognize_loop();
 }

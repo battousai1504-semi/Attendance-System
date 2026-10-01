@@ -1,0 +1,429 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <style>
+    :root { color-scheme: light; --ink:#172033; --muted:#667085; --line:#e4e7ec;
+      --brand:#2357d9; --ok:#067647; --warn:#b54708; --bad:#b42318; --card:#fff; }
+    * { box-sizing:border-box; }
+    body { margin:0; font:14px/1.45 system-ui,-apple-system,sans-serif;
+      color:var(--ink); background:#f5f7fb; }
+    header { background:#12213f; color:white; padding:18px max(20px,calc((100% - 1180px)/2)); }
+    header h1 { margin:0; font-size:22px; } header p { margin:4px 0 0; opacity:.75; }
+    main { max-width:1180px; margin:auto; padding:20px; }
+    .card { background:var(--card); border:1px solid var(--line); border-radius:14px;
+      padding:16px; box-shadow:0 2px 8px #1018280a; }
+    #login { max-width:440px; margin:60px auto; }
+    label { display:block; color:var(--muted); font-weight:600; margin-bottom:5px; }
+    input,select,button { font:inherit; min-height:40px; border-radius:8px; }
+    input,select { width:100%; border:1px solid #cbd1dc; padding:8px 10px; background:white; }
+    button { border:0; padding:8px 14px; background:var(--brand); color:white;
+      font-weight:700; cursor:pointer; }
+    button.secondary { color:var(--ink); background:#eef2f7; }
+    button.danger { background:var(--bad); }
+    button:disabled { opacity:.5; cursor:not-allowed; }
+    .grid { display:grid; grid-template-columns:repeat(5,1fr); gap:12px; margin:16px 0; }
+    .metric strong { display:block; font-size:26px; margin-top:3px; }
+    .toolbar { display:grid; grid-template-columns:minmax(220px,2fr) repeat(3,minmax(130px,1fr)) auto auto;
+      align-items:end; gap:10px; }
+    .table-wrap { overflow:auto; }
+    table { width:100%; border-collapse:collapse; min-width:850px; }
+    th,td { padding:10px; border-bottom:1px solid var(--line); text-align:left; }
+    th { color:var(--muted); font-size:12px; text-transform:uppercase; }
+    .pill { display:inline-block; padding:4px 9px; border-radius:999px; font-weight:700;
+      background:#eef2f7; }
+    .PRESENT { color:var(--ok); background:#ecfdf3; }
+    .LATE { color:var(--warn); background:#fffaeb; }
+    .ABSENT { color:var(--bad); background:#fef3f2; }
+    .EXCUSED { color:#6941c6; background:#f4f3ff; }
+    .ONLINE { color:var(--ok); background:#ecfdf3; }
+    .OFFLINE { color:var(--bad); background:#fef3f2; }
+    .DISABLED { color:var(--muted); background:#eef2f7; }
+    .device-card { margin-bottom:16px; }
+    .device-card table { min-width:1100px; }
+    .device-card h2 { margin:0 0 4px; }
+    .row-actions { display:flex; gap:6px; min-width:245px; }
+    .row-actions select { min-height:34px; }
+    .row-actions button { min-height:34px; padding:5px 10px; }
+    .notice { position:sticky; top:8px; z-index:20; margin:12px 0;
+      padding:10px 12px; border-radius:8px; display:none; box-shadow:0 4px 16px #10182826; }
+    .notice.error { display:block; color:var(--bad); background:#fef3f2; }
+    .notice.ok { display:block; color:var(--ok); background:#ecfdf3; }
+    .notice.loading { display:block; color:var(--brand); background:#eff4ff; }
+    details { margin-top:16px; } summary { cursor:pointer; font-weight:700; }
+    .form-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin-top:12px; }
+    .form-actions { display:flex; gap:8px; align-items:end; }
+    .meta { color:var(--muted); margin:8px 0 0; }
+    [hidden] { display:none !important; }
+    @media (max-width:760px) {
+      .grid { grid-template-columns:repeat(2,1fr); }
+      .toolbar,.form-grid { grid-template-columns:1fr; }
+      main { padding:12px; }
+    }
+  </style>
+</head>
+<body>
+  <header><h1>Robot Attendance</h1><p>Dashboard giáo viên · dữ liệu sinh trắc học không rời thiết bị</p></header>
+  <main>
+    <section id="login" class="card">
+      <h2>Đăng nhập dashboard</h2>
+      <p class="meta">Khóa chỉ được giữ trong phiên trình duyệt và không xuất hiện trong URL.</p>
+      <form id="login-form">
+        <p><label for="actor">Giáo viên / người thao tác</label><input id="actor" required maxlength="80"></p>
+        <p><label for="access-key">Dashboard access key</label><input id="access-key" type="password" required minlength="12" autocomplete="current-password"></p>
+        <button type="submit">Mở dashboard</button>
+      </form>
+    </section>
+
+    <section id="app" hidden>
+      <div class="card toolbar">
+        <div><label for="session">Buổi học</label><select id="session"></select></div>
+        <div><label for="class-filter">Lớp</label><select id="class-filter"><option value="">Tất cả</option></select></div>
+        <div><label for="date-filter">Ngày</label><input id="date-filter" type="date"></div>
+        <div><label for="student-filter">Tìm học sinh</label><input id="student-filter" placeholder="Tên hoặc mã học sinh"></div>
+        <button id="refresh" class="secondary">Làm mới</button>
+        <button id="export">Xuất CSV</button>
+      </div>
+      <div id="notice" class="notice" role="status" aria-live="polite"></div>
+      <div class="grid">
+        <div class="card metric"><span>Sĩ số</span><strong id="total">0</strong></div>
+        <div class="card metric"><span>Có mặt</span><strong id="present">0</strong></div>
+        <div class="card metric"><span>Đi muộn</span><strong id="late">0</strong></div>
+        <div class="card metric"><span>Vắng</span><strong id="absent">0</strong></div>
+        <div class="card metric"><span>Có phép</span><strong id="excused">0</strong></div>
+      </div>
+      <div class="card table-wrap device-card">
+        <h2>Trạng thái thiết bị</h2>
+        <p class="meta">Thiết bị chuyển sang OFFLINE nếu quá 180 giây không có heartbeat.</p>
+        <table>
+          <thead><tr><th>Thiết bị</th><th>Trạng thái</th><th>Last seen</th><th>Firmware</th><th>RSSI</th><th>Heap</th><th>PSRAM</th><th>Đang chờ</th><th>Sync</th><th>Lỗi liên tiếp</th><th>Lỗi gần nhất</th></tr></thead>
+          <tbody id="device-rows"></tbody>
+        </table>
+      </div>
+      <div class="card table-wrap">
+        <div class="form-actions">
+          <h2 style="flex:1;margin:0">Danh sách điểm danh</h2>
+          <button id="close-session" class="danger">Đóng buổi học</button>
+        </div>
+        <p id="session-meta" class="meta"></p>
+        <table>
+          <thead><tr><th>Mã</th><th>Họ tên</th><th>Trạng thái</th><th>Thời gian</th><th>Độ tin cậy</th><th>Điều chỉnh</th></tr></thead>
+          <tbody id="student-rows"></tbody>
+        </table>
+      </div>
+
+      <details class="card">
+        <summary>Tạo buổi học mới</summary>
+        <form id="session-form" class="form-grid">
+          <div><label>Session ID</label><input name="session_id" required placeholder="12A1-20260921-P1"></div>
+          <div><label>Lớp</label><input name="class_id" required placeholder="12A1"></div>
+          <div><label>Tiết</label><input name="period" required placeholder="P1"></div>
+          <div><label>Thiết bị</label><input name="device_id" required value="robot-01"></div>
+          <div><label>Bắt đầu</label><input name="starts_at" type="datetime-local" required></div>
+          <div><label>Đi muộn sau</label><input name="late_after" type="datetime-local" required></div>
+          <div><label>Kết thúc</label><input name="ends_at" type="datetime-local" required></div>
+          <div class="form-actions"><button type="submit">Tạo và kích hoạt</button></div>
+        </form>
+      </details>
+    </section>
+  </main>
+  <script>
+    const labels = {PRESENT:'Có mặt',LATE:'Đi muộn',ABSENT:'Vắng',EXCUSED:'Có phép'};
+    const deviceLabels = {ONLINE:'Online',OFFLINE:'Offline',DISABLED:'Đã tắt'};
+    let state = {key:'', actor:'', data:null, cache:Object.create(null), loadToken:0,
+      pending:false, stale:false, mutating:false};
+    const byId = (id) => document.getElementById(id);
+
+    function showNotice(message, type='error') {
+      const node = byId('notice'); node.textContent = message || '';
+      node.className = message ? `notice ${type}` : 'notice';
+    }
+    function friendlyError(message) {
+      const errors = {
+        busy:'Hệ thống đang xử lý một yêu cầu khác. Vui lòng thử lại.',
+        unknown_session:'Không tìm thấy buổi học. Hãy làm mới dashboard.',
+        unknown_session_or_student:'Không tìm thấy buổi học hoặc học sinh.',
+        student_not_in_session_class:'Học sinh không thuộc lớp của buổi học này.',
+        session_not_active:'Buổi học không còn ở trạng thái hoạt động.',
+        invalid_status:'Trạng thái điểm danh không hợp lệ.',
+        dashboard_unauthorized:'Phiên đăng nhập không hợp lệ. Vui lòng đăng nhập lại.',
+      };
+      return errors[message] || message;
+    }
+    function fail(error) {
+      const message = error && error.message ? error.message : String(error);
+      showNotice(friendlyError(message));
+      if (message.includes('dashboard_unauthorized')) {
+        sessionStorage.removeItem('attendanceDashboardKey');
+        byId('app').hidden = true; byId('login').hidden = false;
+      }
+    }
+    function setDashboardPending(pending) {
+      state.pending = pending;
+      const selected = state.data && state.data.selected_session;
+      const blocked = pending || state.stale || state.mutating;
+      byId('app').setAttribute('aria-busy', String(pending));
+      byId('export').disabled = blocked || !selected;
+      byId('refresh').disabled = pending || state.mutating;
+      byId('close-session').disabled = blocked || !selected || selected.status !== 'ACTIVE';
+      byId('student-rows').querySelectorAll('select,button').forEach((control) => {
+        control.disabled = blocked;
+      });
+      byId('session-form').querySelectorAll('button').forEach((control) => {
+        control.disabled = blocked;
+      });
+    }
+    function setMutating(busy) {
+      state.mutating = busy;
+      ['session','class-filter','date-filter'].forEach((id) => {
+        byId(id).disabled = busy;
+      });
+      setDashboardPending(state.pending);
+    }
+    function renderMutation(data) {
+      ++state.loadToken;
+      state.stale = false;
+      render(data);
+      setMutating(false);
+    }
+    function load(sessionId='', useCache=false, quiet=false) {
+      const token = ++state.loadToken;
+      if (useCache && state.cache[sessionId]) render(state.cache[sessionId]);
+      if (!quiet) {
+        state.stale = false;
+        setDashboardPending(true);
+        showNotice('Đang cập nhật dữ liệu buổi học…', 'loading');
+      }
+      google.script.run.withSuccessHandler((data) => {
+        if (token !== state.loadToken || (quiet && state.mutating)) return;
+        state.stale = false;
+        render(data);
+        setDashboardPending(false);
+        if (!quiet) showNotice('');
+      }).withFailureHandler((error) => {
+        if (token !== state.loadToken || (quiet && state.mutating)) return;
+        state.stale = true;
+        setDashboardPending(false);
+        fail(error);
+        if (!byId('app').hidden && state.data) {
+          const message = error && error.message ? error.message : String(error);
+          showNotice('Dữ liệu có thể đã cũ. Bấm Làm mới. ' + friendlyError(message));
+        }
+      }).getDashboardData(state.key, {session_id:sessionId});
+    }
+    function render(data) {
+      state.data = data; byId('login').hidden = true; byId('app').hidden = false;
+      const selected = data.selected_session;
+      if (selected) {
+        if (selected.status === 'CLOSED') state.cache[selected.session_id] = data;
+        else delete state.cache[selected.session_id];
+      }
+      const classFilter = byId('class-filter');
+      const previousClass = classFilter.value;
+      classFilter.replaceChildren(new Option('Tất cả',''));
+      [...new Set(data.sessions.map((item) => item.class_id))].sort().forEach((classId) => {
+        classFilter.appendChild(new Option(classId,classId));
+      });
+      classFilter.value = previousClass;
+      fillSessionOptions(selected ? selected.session_id : '');
+      ['total','present','late','absent','excused'].forEach((key) => {
+        byId(key).textContent = data.summary[key];
+      });
+      byId('session-meta').textContent = selected ?
+        `${selected.class_id} · ${selected.period} · ${new Date(selected.starts_at).toLocaleString('vi-VN')} → ${new Date(selected.ends_at).toLocaleString('vi-VN')}` :
+        'Chưa có buổi học.';
+      byId('close-session').disabled = !selected || selected.status !== 'ACTIVE';
+      renderDevices();
+      renderRows();
+    }
+    function filteredSessions() {
+      if (!state.data) return [];
+      const classId=byId('class-filter').value, date=byId('date-filter').value;
+      return state.data.sessions.filter((item) =>
+        (!classId || item.class_id===classId) && (!date || item.date===date));
+    }
+    function fillSessionOptions(preferredId='') {
+      const select=byId('session'); select.replaceChildren();
+      filteredSessions().forEach((item) => {
+        const option = document.createElement('option'); option.value = item.session_id;
+        option.textContent = `${item.session_id} · ${item.class_id} · ${item.status}`;
+        option.selected = item.session_id === preferredId;
+        select.appendChild(option);
+      });
+      return select.value;
+    }
+    function applySessionFilters() {
+      const sessionId=fillSessionOptions();
+      if (sessionId) {
+        load(sessionId, true);
+      } else {
+        showNotice('Không có buổi học phù hợp với bộ lọc.');
+      }
+    }
+    function formatBytes(value) {
+      if (value == null) return '—';
+      if (value >= 1048576) return `${(value/1048576).toFixed(1)} MiB`;
+      if (value >= 1024) return `${(value/1024).toFixed(0)} KiB`;
+      return `${value} B`;
+    }
+    function renderDevices() {
+      const body = byId('device-rows'); body.replaceChildren();
+      const devices = state.data && Array.isArray(state.data.devices) ?
+        state.data.devices : [];
+      if (devices.length === 0) {
+        const tr=document.createElement('tr'), td=document.createElement('td');
+        td.colSpan=11; td.textContent='Chưa có thiết bị được provision.';
+        tr.appendChild(td); body.appendChild(tr); return;
+      }
+      devices.forEach((device) => {
+        const tr=document.createElement('tr');
+        const append=(value) => {
+          const td=document.createElement('td'); td.textContent=value; tr.appendChild(td);
+        };
+        append(device.device_id);
+        const status=document.createElement('td'), pill=document.createElement('span');
+        pill.className=`pill ${device.status}`;
+        pill.textContent=deviceLabels[device.status] || device.status;
+        status.appendChild(pill); tr.appendChild(status);
+        append(device.last_seen ? new Date(device.last_seen).toLocaleString('vi-VN') : '—');
+        append(device.firmware_version || '—');
+        append(device.rssi == null ? '—' : `${device.rssi} dBm`);
+        append(formatBytes(device.free_heap));
+        append(formatBytes(device.free_psram));
+        append(device.pending_events == null ? '—' : String(device.pending_events));
+        append(device.sync_latency_ms == null ? '—' : `${device.sync_latency_ms} ms`);
+        append(String(device.consecutive_failures || 0));
+        append(device.last_error || '—');
+        body.appendChild(tr);
+      });
+    }
+    function renderRows() {
+      const body = byId('student-rows'); body.replaceChildren();
+      if (!state.data) return;
+      const query = byId('student-filter').value.trim().toLocaleLowerCase('vi');
+      state.data.students.filter((student) => {
+        return !query || `${student.student_id} ${student.name}`.toLocaleLowerCase('vi').includes(query);
+      }).forEach((student) => {
+        const tr = document.createElement('tr');
+        [student.student_id, student.name].forEach((text) => {
+          const td = document.createElement('td'); td.textContent = text; tr.appendChild(td);
+        });
+        const status = document.createElement('td'); const pill = document.createElement('span');
+        pill.className = `pill ${student.status}`; pill.textContent = labels[student.status];
+        status.appendChild(pill); tr.appendChild(status);
+        const time = document.createElement('td'); time.textContent = student.timestamp || '—'; tr.appendChild(time);
+        const confidence = document.createElement('td');
+        confidence.textContent = student.confidence_milli == null ? '—' : `${student.confidence_milli}‰`;
+        tr.appendChild(confidence);
+        const action = document.createElement('td'); action.className = 'row-actions';
+        const select = document.createElement('select');
+        Object.keys(labels).forEach((value) => {
+          const option = document.createElement('option'); option.value=value;
+          option.textContent=labels[value]; option.selected=value===student.status; select.appendChild(option);
+        });
+        const button = document.createElement('button'); button.textContent='Lưu';
+        button.onclick = () => correct(student, select.value, button);
+        action.append(select,button); tr.appendChild(action); body.appendChild(tr);
+      });
+    }
+    function correct(student, status, button) {
+      if (state.pending || state.stale || state.mutating) return;
+      if (status === student.status) {
+        showNotice('Trạng thái chưa thay đổi.', 'ok'); return;
+      }
+      const answer = prompt(`Lý do đổi ${student.name} thành “${labels[status]}”:`);
+      if (answer === null) return;
+      const reason = answer.trim();
+      if (!reason) { showNotice('Bạn cần nhập lý do điều chỉnh.'); return; }
+      button.textContent='Đang lưu…';
+      setMutating(true);
+      showNotice('Đang ghi điều chỉnh…','ok');
+      google.script.run.withSuccessHandler((data) => {
+        renderMutation(data);
+        showNotice(`Đã đổi ${student.name} thành “${labels[status]}” và ghi AuditLog.`,'ok');
+      }).withFailureHandler((error) => {
+        button.textContent='Lưu';
+        setMutating(false);
+        fail(error);
+      }).recordManualCorrection(state.key, {
+        session_id:state.data.selected_session.session_id, student_id:student.student_id,
+        status, actor:state.actor, reason,
+      });
+    }
+    function csvCell(value) {
+      const text = String(value ?? '');
+      const safe = /^\s*[=+@-]/.test(text) ? "'" + text : text;
+      return `"${safe.replaceAll('"','""')}"`;
+    }
+    function exportCsv() {
+      if (!state.data || !state.data.selected_session || state.pending ||
+          state.stale || state.mutating) return;
+      const sessionId = state.data.selected_session.session_id;
+      const rows = [['Session ID','Student ID','Name','Class','Status','Reason',
+        'Timestamp','Event ID','Confidence']];
+      state.data.students.forEach((s) => rows.push([
+        sessionId,s.student_id,s.name,s.class_id,labels[s.status],
+        s.override ? s.override.reason || '' : '',
+        s.timestamp,s.event_id,s.confidence_milli ?? '',
+      ]));
+      const csv = '\ufeff' + rows.map((row) => row.map(csvCell).join(',')).join('\r\n');
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8'}));
+      link.download = `${state.data.selected_session.session_id}.csv`; link.click();
+      URL.revokeObjectURL(link.href);
+    }
+    byId('login-form').onsubmit = (event) => {
+      event.preventDefault(); state.actor=byId('actor').value.trim(); state.key=byId('access-key').value;
+      state.cache=Object.create(null); state.data=null; state.stale=false;
+      sessionStorage.setItem('attendanceDashboardKey',state.key);
+      sessionStorage.setItem('attendanceDashboardActor',state.actor); load();
+    };
+    byId('session').onchange = (event) => load(event.target.value, true);
+    byId('class-filter').onchange = applySessionFilters;
+    byId('date-filter').onchange = applySessionFilters;
+    byId('student-filter').oninput = renderRows;
+    byId('refresh').onclick = () => load(byId('session').value);
+    byId('export').onclick = exportCsv;
+    byId('close-session').onclick = () => {
+      if (state.pending || state.stale || state.mutating || !state.data.selected_session ||
+          !confirm('Đóng buổi học này?')) return;
+      const sessionId = state.data.selected_session.session_id;
+      const button=byId('close-session'); button.textContent='Đang đóng…';
+      setMutating(true);
+      showNotice('Đang đóng buổi học…','ok');
+      google.script.run.withSuccessHandler((data) => {
+        renderMutation(data); button.textContent='Đóng buổi học';
+        showNotice('Đã đóng buổi học.','ok');
+      }).withFailureHandler((error) => {
+        button.textContent='Đóng buổi học'; setMutating(false); fail(error);
+      }).updateClassSessionStatus(state.key, {
+          session_id:sessionId,status:'CLOSED',actor:state.actor,
+          reason:'Closed from teacher dashboard',
+        });
+    };
+    byId('session-form').onsubmit = (event) => {
+      event.preventDefault();
+      if (state.pending || state.stale || state.mutating) return;
+      const values=Object.fromEntries(new FormData(event.target));
+      ['starts_at','late_after','ends_at'].forEach((key) => values[key]=new Date(values[key]).toISOString());
+      values.actor=state.actor;
+      setMutating(true);
+      showNotice('Đang tạo buổi học…','loading');
+      google.script.run.withSuccessHandler((data) => {
+        renderMutation(data); event.target.reset(); showNotice('Đã tạo buổi học.','ok');
+      }).withFailureHandler((error) => {
+        setMutating(false); fail(error);
+      }).createClassSession(state.key,values);
+    };
+    state.key=sessionStorage.getItem('attendanceDashboardKey')||'';
+    state.actor=sessionStorage.getItem('attendanceDashboardActor')||'';
+    if (state.key && state.actor) { byId('actor').value=state.actor; load(); }
+    setInterval(() => {
+      if (state.key && state.data && !state.pending && !state.mutating && !document.hidden) {
+        load(byId('session').value, false, true);
+      }
+    }, 60000);
+  </script>
+</body>
+</html>

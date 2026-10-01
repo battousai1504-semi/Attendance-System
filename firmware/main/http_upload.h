@@ -9,6 +9,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <stddef.h>
 
 #include "esp_err.h"
 
@@ -29,7 +30,18 @@ typedef struct {
  * Khởi tạo module và tạo background task upload.
  * @param gas_url  URL deploy của Google Apps Script (https://script.google.com/...)
  */
-esp_err_t http_upload_init(const char *gas_url, const char *api_token);
+esp_err_t http_upload_init(const char *gas_url, const char *api_token,
+                           const char *device_id);
+
+/**
+ * Synchronous authenticated heartbeat used only by the maintenance portal
+ * before a candidate runtime configuration is committed. No secret or
+ * response body is written to the log.
+ */
+esp_err_t http_upload_test_config(const char *gas_url,
+                                  const char *api_token,
+                                  const char *device_id,
+                                  int rssi);
 
 /**
  * Ghi bền vững một bản ghi vào outbox nhưng chưa đánh thức task upload.
@@ -45,3 +57,10 @@ void http_upload_notify(void);
  * Kiểm tra số lượng bản ghi đang chờ upload.
  */
 int http_upload_pending_count(void);
+
+/** Fetches the authenticated OTA manifest response into caller storage. */
+esp_err_t http_upload_fetch_ota_manifest(char *response, size_t response_size);
+
+/** Serializes the long OTA download against attendance/heartbeat TLS traffic. */
+esp_err_t http_upload_suspend_for_ota(void);
+void http_upload_resume_after_ota(void);

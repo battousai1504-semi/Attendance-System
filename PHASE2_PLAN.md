@@ -235,6 +235,8 @@ Tiêu chí hoàn thành:
 
 ### Để Phase 3
 
+- phản hồi âm thanh bằng DFPlayer Mini và loa, gồm thiết kế nguồn, chọn GPIO
+  UART không xung đột camera, volume và ánh xạ file âm thanh;
 - nhiều board chia sẻ hoặc đồng bộ face embeddings;
 - ứng dụng mobile native;
 - server riêng, PostgreSQL hoặc Firebase;

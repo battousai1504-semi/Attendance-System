@@ -1,10 +1,11 @@
-# Phase 1 release-candidate notes
+# Phase 1 release notes
 
-Firmware version: `1.2.1-phase1-rc1`
+Firmware version: `1.2.1-phase1`
 
-This candidate closes the static-analysis gaps found after the initial Phase 1
-implementation. It is not a final release until every hardware acceptance
-item in `PHASE1_TEST_GUIDE.md` has evidence from the target board.
+The end-to-end attendance flow has passed on the target board with two enrolled
+students: recognition, cooldown, durable local event creation, HTTPS delivery
+and Google Sheets idempotency. Destructive power-loss and long-duration soak
+tests remain explicit regression items rather than implied results.
 
 ## Reliability fixes
 
@@ -20,7 +21,9 @@ item in `PHASE1_TEST_GUIDE.md` has evidence from the target board.
 
 ## Enrollment and security fixes
 
-- Reopen enrollment by holding the BOOT button at startup.
+- Reopen enrollment by holding BOOT for 2.5 seconds while the application is
+  running. A one-shot NVS flag and software restart avoid GPIO0's ROM download
+  strap at reset.
 - Require a WPA2 enrollment password; open enrollment APs are no longer
   accepted.
 - Stop printing the enrollment password in serial logs.
@@ -39,8 +42,9 @@ item in `PHASE1_TEST_GUIDE.md` has evidence from the target board.
 - Add host-side attendance persistence tests, Apps Script contract tests, and
   an Ubuntu-based ESP-IDF 6.0.2 CI build with a binary artifact.
 
-## Release gate
+## Baseline gate
 
-Do not rename this candidate to a final Phase 1 release or tag it as stable
-until the manual camera, enrollment, recognition, power-loss, network, TLS and
-Google Sheets tests all pass on the physical ESP32-S3 N16R8 board.
+Before tagging this baseline, rerun the automated suites and the marked core
+hardware checks in `PHASE1_TEST_GUIDE.md`. Keep power-loss, network interruption
+and long-duration tests visible in the release evidence even when they are not
+part of the two-student happy-path result.

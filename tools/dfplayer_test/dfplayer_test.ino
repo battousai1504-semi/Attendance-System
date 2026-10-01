@@ -5,18 +5,17 @@
  * camera, face recognition, or Google Sheets.
  *
  * UART wiring used by this test:
- *   DFPlayer TX  -> ESP32 GPIO1  (ESP32 RX)
- *   DFPlayer RX  <- ESP32 GPIO2  (ESP32 TX, preferably through 1K resistor)
+ *   DFPlayer TX  -> ESP32 GPIO42 (ESP32 RX)
+ *   DFPlayer RX  <- ESP32 GPIO41 (ESP32 TX, through 1K resistor)
  */
 
 #include <Arduino.h>
 #include <HardwareSerial.h>
 #include <DFRobotDFPlayerMini.h>
 
-// These pins are free in the current camera pin configuration.
-// If your board exposes different free pins, change only these two values.
-constexpr int DFPLAYER_RX_PIN = 1;  // ESP32 receives from DFPlayer TX
-constexpr int DFPLAYER_TX_PIN = 2;  // ESP32 sends to DFPlayer RX
+// Match the production firmware so a standalone test needs no rewiring.
+constexpr int DFPLAYER_RX_PIN = 42; // ESP32 receives from DFPlayer TX
+constexpr int DFPLAYER_TX_PIN = 41; // ESP32 sends to DFPlayer RX
 
 constexpr uint8_t DEFAULT_VOLUME = 18; // Range: 0..30
 

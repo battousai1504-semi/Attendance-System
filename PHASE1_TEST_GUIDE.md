@@ -4,6 +4,11 @@ This guide verifies the ESP32-S3 camera, enrollment, recognition, local
 attendance storage, duplicate cooldown, Wi-Fi/NTP, Google Sheets upload, and
 offline retry behavior.
 
+This document preserves the Phase 1 release contract. The current source uses
+API v2 and Phase 3 firmware; use `FULL_SYSTEM_ACCEPTANCE_TEST.md` for the
+current end-to-end test instead of following the historical flash commands
+below. Run repository commands from a directory inside the clone.
+
 Target hardware: ESP32-S3-WROOM N16R8 camera board with its camera already
 connected through the onboard FPC socket. Do not wire camera signals to the
 side headers. See `HARDWARE_AND_UBUNTU_GUIDE.md` before powering the board.
@@ -42,7 +47,7 @@ the first test. Then open an ESP-IDF shell and run:
 
 ```bash
 eim shell v6.0.2
-cd /home/battousai1504/VScode/Projects/Attendance-System/firmware
+cd "$(git rev-parse --show-toplevel)/firmware"
 idf.py build
 ls -l /dev/ttyACM* /dev/ttyUSB* 2>/dev/null
 idf.py -p /dev/ttyACM0 flash monitor
@@ -61,7 +66,7 @@ project's data.
 Expected boot markers:
 
 ```text
-Robot Điểm Danh 1.2.1-phase1-rc1
+Robot Điểm Danh 1.2.1-phase1
 Camera OK (VGA, PSRAM)
 student_db ready
 Face models ready
@@ -98,8 +103,10 @@ For a clean device:
    saved list. Then press **Kết thúc buổi đăng ký** only after the class is
    complete.
 10. After completion, reboot normally and verify recognition mode starts.
-11. Hold BOOT, press RESET/EN, and keep holding BOOT for at least 2.5 seconds.
-    Verify maintenance enrollment opens without erasing identities.
+11. While recognition mode is already running, hold BOOT for at least 2.5
+    seconds. Verify the firmware stores a one-shot request, restarts itself and
+    opens maintenance enrollment without erasing identities. Do not press
+    RESET while BOOT is held; GPIO0 is the ROM download-mode strap.
 12. Confirm that the serial log prints the enrollment SSID but never prints its
     password.
 
@@ -205,7 +212,7 @@ Pass criteria:
 
 ## Phase 1 acceptance checklist
 
-- [ ] Firmware `1.2.1-phase1-rc1` builds on Ubuntu and boots without panic or restart loop.
+- [ ] Firmware `1.2.1-phase1` builds on Ubuntu and boots without panic or restart loop.
 - [ ] Camera needs no jumper wiring; its FPC cable is seated and locked with power removed.
 - [ ] Flash and monitor use the board's USB-UART port and the correct `/dev/tty*` device.
 - [ ] Camera and PSRAM initialize.

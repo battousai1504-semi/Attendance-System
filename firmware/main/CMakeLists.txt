@@ -12,11 +12,21 @@ file(WRITE "${CDP_COMBINED_CA_BUNDLE}" "${CDP_GOOGLE_CA_CONTENT}\n")
 idf_component_register(
     SRCS
         "app_main.c"
+        "audio_feedback.c"
         "attendance.c"
+        "device_config.c"
+        "device_config_codec.c"
+        "dfplayer_protocol.c"
         "face_engine.cpp"
         "manual_clock.c"
+        "maintenance_mode.c"
+        "ota_manager.c"
+        "ota_manifest.c"
+        "outbox_codec.c"
         "student_db.c"
+        "upload_policy.c"
         "wifi_time.c"
+        "http_payload.c"
         "http_upload.c"
         "enroll_server.c"
     INCLUDE_DIRS "."
@@ -28,11 +38,24 @@ idf_component_register(
         esp_wifi
         esp_netif
         esp_event
+        esp_https_ota
+        app_update
+        esp_psram
         mbedtls
         esp_driver_gpio
+        esp_driver_uart
         spiffs
         nvs_flash
         human_face_recognition
         human_face_detect
         esp-dl
 )
+
+
+target_compile_definitions(${COMPONENT_LIB} PRIVATE
+    CDP_FIRMWARE_VERSION=\"${PROJECT_VER}\")
+
+if(CDP_OTA_ROLLBACK_TEST)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE
+        CDP_OTA_ROLLBACK_TEST=1)
+endif()
