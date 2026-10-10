@@ -103,10 +103,10 @@ nếu phải chạy lại; ghi thêm lượt mới):
 
 1. Khi firmware đang chạy, giữ **BOOT 2,5 giây**, thả ra và chờ board restart
    vào `RobotSetup`; **không** vừa giữ BOOT vừa bấm RST. Kết nối AP và mở
-   `http://192.168.4.1/config`. Mật khẩu lần đầu là
-   `RobotSetup-2026`; nếu đã cấu hình thì là `Cfg-` + 12 ký tự đầu của
-   device secret. Tắt VPN/mobile data nếu máy tự bỏ AP không có Internet.
-2. **TC-01:** bật Audio, volume 10–12, lưu. Phát thử nút trên trang; nếu muốn
+   `http://192.168.4.1/config`. Mật khẩu AP là mật khẩu bàn giao đã cấu hình
+   trong `setup_ap_password.h` của bản build này, ở cả lần đầu và maintenance.
+   Tắt VPN/mobile data nếu máy tự bỏ AP không có Internet.
+2. **TC-01:** bật Audio (âm lượng cố định 30/30), lưu. Phát thử nút trên trang; nếu muốn
    test đủ sáu track ngay trong portal, chạy trên máy đang nối AP:
 
    ```bash
@@ -119,10 +119,10 @@ nếu phải chạy lại; ghi thêm lượt mới):
    Sau đó nhập ID 1, ID 2 ở nút **Phát thử lời chào có tên** và nghe đúng hai
    tên khác nhau. Đối chiếu **âm thanh nghe được và đúng nội dung**; HTTP OK
    chỉ chứng minh lệnh được nhận, không chứng minh loa/thẻ phát được.
-3. **TC-02:** đổi volume sang 12, reboot và mở lại portal: vẫn bật/12.
+3. **TC-02:** reboot và mở lại portal: Audio vẫn bật, mức âm lượng 30/30.
    Tắt Audio, reboot; trong một session test riêng đang ACTIVE và sau cooldown
    60 giây, thử điểm danh: event vẫn lưu/upload nhưng không phát tiếng. Đóng
-   session test đó, bật lại Audio/12 trước TC-04. Không test mute bằng cách
+   session test đó, bật lại Audio trước TC-04. Không test mute bằng cách
    rút dây loa lúc thiết bị đang cấp nguồn.
 4. **TC-03:** nếu cần nghiệm thu track enroll, chỉ enroll một danh tính test
    mới đã chuẩn bị và **không xóa** hai danh tính chính. Track 5 chỉ được phát
@@ -132,8 +132,8 @@ nếu phải chạy lại; ghi thêm lượt mới):
 
 ## 3. Điểm danh, session và dashboard (TC-04…07, khoảng 20 phút)
 
-1. **TC-04:** trên dashboard mở **Bắt đầu buổi học mới**, chọn lớp, tiết và
-   45 phút; để các trường nâng cao trống để kiểm tra luồng giáo viên tối giản.
+1. **TC-04:** đăng nhập dashboard, mở **Bắt đầu buổi học mới**, chọn lớp và
+   buổi Sáng/Chiều; để các trường nâng cao trống để kiểm tra luồng tối giản.
    Mã buổi, giờ bắt đầu, mốc đi muộn 10 phút và giờ kết thúc phải tự tạo đúng.
    ID 1 nhìn camera một lần. Ghi Event ID
    trong serial. PASS khi local báo saved, cloud báo uploaded, Sheet

@@ -1,5 +1,9 @@
 # P2.2 teacher dashboard acceptance guide
 
+> Historical Phase 2 guide. The current teacher dashboard uses account login,
+> not the access key below. For the current deployment and tests, use
+> `google_apps_script/README.md` and `ENDUSER_UX_TEST_GUIDE.md`.
+
 ## 1. Deploy dashboard files
 
 In the staging Apps Script project:
