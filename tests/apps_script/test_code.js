@@ -7,6 +7,7 @@ const vm = require('vm');
 let flushCount = 0;
 let lockAvailable = true;
 const scriptProperties = {};
+const cached = new Map();
 
 class FakeSheet {
   constructor(name) {
@@ -179,6 +180,15 @@ const context = {
       return propertiesApi;
     },
   },
+  CacheService: {
+    getScriptCache() {
+      return {
+        get(key) { return cached.get(key) || null; },
+        put(key, value) { cached.set(key, String(value)); },
+        remove(key) { cached.delete(key); },
+      };
+    },
+  },
   SpreadsheetApp: {
     getActiveSpreadsheet() {
       return spreadsheet;
@@ -201,6 +211,7 @@ const context = {
     },
   },
   Utilities: {
+    getUuid() { return crypto.randomUUID(); },
     DigestAlgorithm: {SHA_256: 'sha256'},
     Charset: {UTF_8: 'utf8'},
     computeDigest(algorithm, value) {
@@ -453,15 +464,25 @@ assert.strictEqual(context.doGet({parameter: {view: 'dashboard'}}).fileName,
                    'Dashboard');
 assert.throws(() => context.getDashboardData('wrong-dashboard-key', {}),
               /dashboard_unauthorized/);
-scriptProperties.BOOTSTRAP_DASHBOARD_KEY = 'teacher-dashboard-key-2026';
-assert.strictEqual(context.provisionDashboardAccessFromProperties().ok, true);
-assert.strictEqual(scriptProperties.BOOTSTRAP_DASHBOARD_KEY, undefined);
-assert.strictEqual(scriptProperties.DASHBOARD_ACCESS_HASH.length, 64);
+scriptProperties.BOOTSTRAP_TEACHER_USERNAME = 'Giáo viên mẫu';
+scriptProperties.BOOTSTRAP_TEACHER_PASSWORD = 'test-only-password';
+assert.strictEqual(context.provisionDashboardAccountFromProperties().ok, true);
+assert.strictEqual(scriptProperties.BOOTSTRAP_TEACHER_PASSWORD, undefined);
+assert.strictEqual(scriptProperties.DASHBOARD_PASSWORD_HASH.length, 64);
+assert.throws(() => context.loginDashboard('Giáo viên mẫu', 'wrong-password'),
+              /dashboard_login_failed/);
 
 sheets.Students.appendRow([1, 'Nguyen Van A', '10A1', true, new Date(), new Date()]);
 sheets.Students.appendRow([2, 'Tran Thi B', '10A1', true, new Date(), new Date()]);
 sheets.Students.appendRow([3, 'Other Class', '11A1', true, new Date(), new Date()]);
-const dashboardKey = 'teacher-dashboard-key-2026';
+const dashboardKey = context.loginDashboard('Giáo viên mẫu', 'test-only-password').token;
+assert.deepStrictEqual(Array.from(context.getDashboardData(dashboardKey, {}).classes),
+  ['10A1', '11A1']);
+assert.ok(context.getDashboardData(dashboardKey, {}).unassigned_today >= 1);
+sheets.Classes.appendRow(['10A1', 'Lớp 10A1', true, new Date(), new Date()]);
+sheets.Classes.appendRow(['11A1', 'Lớp 11A1', false, new Date(), new Date()]);
+assert.deepStrictEqual(Array.from(context.getDashboardData(dashboardKey, {}).classes),
+  ['10A1']);
 
 // Google Sheets may coerce an all-numeric Session ID into a Date. Dashboard
 // reads, corrections and manual close must still address the canonical ID.
@@ -555,16 +576,18 @@ const closedDashboard = context.updateClassSessionStatus(dashboardKey, {
 });
 assert.strictEqual(closedDashboard.selected_session.status, 'CLOSED');
 const createdDashboard = context.createClassSession(dashboardKey, {
-  session_id: '10A1-NEW', class_id: '10A1', period: 'P3',
+  session_id: '10A1-NEW', class_id: '10A1', period: 'Sáng',
   device_id: 'robot-01', actor: 'Teacher A',
   starts_at: new Date(now + 7200000).toISOString(),
   late_after: new Date(now + 7500000).toISOString(),
   ends_at: new Date(now + 10800000).toISOString(),
 });
 assert.strictEqual(createdDashboard.selected_session.session_id, '10A1-NEW');
+assert.strictEqual(createdDashboard.selected_session.period, 'Sáng');
 assert.strictEqual(createdDashboard.selected_session.status, 'ACTIVE');
 assert.match(createdDashboard.selected_session.date, /^\d{4}-\d{2}-\d{2}$/);
 assert.strictEqual(sheets.AuditLog.rows.at(-1)[2], 'SESSION_CREATE');
+assert.strictEqual(sheets.AuditLog.rows.at(-1)[1], 'Giáo viên mẫu');
 
 assert.strictEqual(post({...validPayload, api_version: 99}).error,
                    'unsupported_api_version');
@@ -611,4 +634,14 @@ sheets.Students.rows[0][0] = originalStudentsHeader;
 sheets.Attendance.rows.forEach((row, index) => row.push(...attendanceTails[index]));
 
 assert.ok(flushCount > 0);
+scriptProperties.BOOTSTRAP_TEACHER_USERNAME = 'Giáo viên mẫu';
+scriptProperties.BOOTSTRAP_TEACHER_PASSWORD = 'replacement-test-password';
+context.provisionDashboardAccountFromProperties();
+assert.throws(() => context.getDashboardData(dashboardKey, {}),
+              /dashboard_unauthorized/);
+assert.strictEqual(context.loginDashboard('Giáo viên mẫu',
+  'replacement-test-password').teacher_name, 'Giáo viên mẫu');
+assert.strictEqual(context.logoutDashboard(dashboardKey).ok, true);
+assert.throws(() => context.getDashboardData(dashboardKey, {}),
+              /dashboard_unauthorized/);
 console.log('Apps Script API v2 tests: PASS');

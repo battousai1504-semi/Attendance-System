@@ -610,14 +610,67 @@ function handleSessionSync(payload, auth, spreadsheet) {
   });
 }
 
-function requireDashboardAccess(accessKey) {
-  const key = String(accessKey || '');
-  const expected = PropertiesService.getScriptProperties()
-    .getProperty('DASHBOARD_ACCESS_HASH') || '';
-  if (key.length < 12 || !expected ||
-      !constantTimeEqual(hashSecret(key), expected)) {
+const DASHBOARD_SESSION_SECONDS = 21600;
+const DASHBOARD_LOGIN_WINDOW_SECONDS = 900;
+
+function dashboardPasswordHash(salt, password) {
+  // Iteration slows offline guessing if Script Properties are ever disclosed.
+  let digest = String(salt) + ':' + String(password);
+  for (let index = 0; index < 512; index++) digest = hashSecret(digest);
+  return digest;
+}
+
+function loginDashboard(username, password) {
+  const properties = PropertiesService.getScriptProperties();
+  const name = String(username || '').trim();
+  const secret = String(password || '');
+  const cache = CacheService.getScriptCache();
+  const limitKey = 'dashboard-login:' + hashSecret(name.toLowerCase()).slice(0, 32);
+  const failures = Number(cache.get(limitKey) || 0);
+  if (failures >= 5) throw new Error('dashboard_login_limited');
+  const configuredName = properties.getProperty('DASHBOARD_USERNAME') || '';
+  const salt = properties.getProperty('DASHBOARD_PASSWORD_SALT') || '';
+  const expected = properties.getProperty('DASHBOARD_PASSWORD_HASH') || '';
+  const valid = name.length <= 80 && name === configuredName && salt && expected &&
+    secret.length >= 8 && secret.length <= 127 &&
+    constantTimeEqual(dashboardPasswordHash(salt, secret), expected);
+  if (!valid) {
+    cache.put(limitKey, String(failures + 1), DASHBOARD_LOGIN_WINDOW_SECONDS);
+    throw new Error('dashboard_login_failed');
+  }
+  cache.remove(limitKey);
+  const token = Utilities.getUuid() + Utilities.getUuid();
+  cache.put('dashboard-session:' + hashSecret(token),
+    JSON.stringify({name: name,
+      credential_version: properties.getProperty('DASHBOARD_CREDENTIAL_VERSION')}),
+    DASHBOARD_SESSION_SECONDS);
+  return {token: token, teacher_name: name, expires_in: DASHBOARD_SESSION_SECONDS};
+}
+
+function logoutDashboard(token) {
+  const value = String(token || '');
+  if (value.length === 72) {
+    CacheService.getScriptCache().remove('dashboard-session:' + hashSecret(value));
+  }
+  return {ok: true};
+}
+
+function requireDashboardAccess(token) {
+  const value = String(token || '');
+  const session = value.length === 72
+    ? CacheService.getScriptCache().get('dashboard-session:' + hashSecret(value))
+    : null;
+  let account = null;
+  try { account = JSON.parse(session || 'null'); } catch (error) {}
+  const properties = PropertiesService.getScriptProperties();
+  if (!account || !account.name ||
+      account.name !== properties.getProperty('DASHBOARD_USERNAME') ||
+      !account.credential_version ||
+      account.credential_version !==
+        properties.getProperty('DASHBOARD_CREDENTIAL_VERSION')) {
     throw new Error('dashboard_unauthorized');
   }
+  return account.name;
 }
 
 function cellDateIso(value) {
@@ -800,12 +853,33 @@ function latestOverrides(spreadsheet, sessionId) {
 
 function buildDashboardData(spreadsheet, filters) {
   const devices = serializeDevices(spreadsheet, new Date());
+  const configuredClasses = allDataRows(
+    spreadsheet.getSheetByName('Classes'), V2_SCHEMAS.Classes.length,
+  ).filter((row) => enabledValue(row[2]))
+    .map((row) => String(row[0] || ''))
+    .filter((classId) => classId !== '');
+  const classes = configuredClasses.length > 0 ? configuredClasses :
+    [...new Set(allDataRows(
+      spreadsheet.getSheetByName('Students'), V2_SCHEMAS.Students.length,
+    ).filter((row) => enabledValue(row[3]))
+      .map((row) => String(row[2] || ''))
+      .filter((classId) => classId !== ''))].sort();
   const sessionRows = allDataRows(
     spreadsheet.getSheetByName('Sessions'), V2_SCHEMAS.Sessions.length,
   );
   const sessions = sessionRows.map(serializeSession).sort((left, right) => {
     return String(right.starts_at).localeCompare(String(left.starts_at));
   });
+  const attendanceRows = allDataRows(
+    spreadsheet.getSheetByName('Attendance'), V2_SCHEMAS.Attendance.length,
+  );
+  const today = Utilities.formatDate(new Date(), 'Asia/Ho_Chi_Minh', 'yyyy-MM-dd');
+  const unassignedToday = attendanceRows.filter((row) => {
+    if (canonicalSessionId(row[9])) return false;
+    const receivedAt = asDate(row[0]);
+    return receivedAt && !isNaN(receivedAt.getTime()) &&
+      Utilities.formatDate(receivedAt, 'Asia/Ho_Chi_Minh', 'yyyy-MM-dd') === today;
+  }).length;
   const requestedSessionId = String((filters && filters.session_id) || '');
   let selected = requestedSessionId ?
     sessions.find((session) => session.session_id === requestedSessionId) :
@@ -818,6 +892,8 @@ function buildDashboardData(spreadsheet, filters) {
       summary: {total: 0, present: 0, late: 0, absent: 0, excused: 0},
       students: [],
       devices: devices,
+      classes: classes,
+      unassigned_today: unassignedToday,
       generated_at: new Date().toISOString(),
     };
   }
@@ -828,9 +904,7 @@ function buildDashboardData(spreadsheet, filters) {
     return String(row[2]) === selected.class_id && enabledValue(row[3]);
   });
   const attendanceByStudent = {};
-  allDataRows(
-    spreadsheet.getSheetByName('Attendance'), V2_SCHEMAS.Attendance.length,
-  ).forEach((row) => {
+  attendanceRows.forEach((row) => {
     if (canonicalSessionId(row[9]) !== selected.session_id) return;
     const studentId = String(row[3]);
     const eventTime = attendanceCellDate(row[6]);
@@ -878,6 +952,8 @@ function buildDashboardData(spreadsheet, filters) {
     summary: summary,
     students: resultRows,
     devices: devices,
+    classes: classes,
+    unassigned_today: unassignedToday,
     generated_at: new Date().toISOString(),
   };
 }
@@ -900,12 +976,11 @@ function getDashboardData(accessKey, filters) {
 }
 
 function recordManualCorrection(accessKey, correction) {
-  requireDashboardAccess(accessKey);
+  const actor = requireDashboardAccess(accessKey);
   requireV2Schema();
   const sessionId = requiredText(correction || {}, 'session_id', 64);
   const studentId = requiredText(correction || {}, 'student_id', 32);
   const status = requiredText(correction || {}, 'status', 16).toUpperCase();
-  const actor = requiredText(correction || {}, 'actor', 80);
   const reason = requiredText(correction || {}, 'reason', 200);
   if (!ATTENDANCE_STATUSES.includes(status)) throw new Error('invalid_status');
 
@@ -939,13 +1014,12 @@ function recordManualCorrection(accessKey, correction) {
 }
 
 function createClassSession(accessKey, input) {
-  requireDashboardAccess(accessKey);
+  const actor = requireDashboardAccess(accessKey);
   requireV2Schema();
   const sessionId = requiredText(input || {}, 'session_id', 64);
   const classId = requiredText(input || {}, 'class_id', 32);
   const period = requiredText(input || {}, 'period', 24);
   const deviceId = requiredText(input || {}, 'device_id', 40);
-  const actor = requiredText(input || {}, 'actor', 80);
   if (!/^[A-Za-z0-9._:-]+$/.test(sessionId) ||
       !/^[A-Za-z0-9._:-]+$/.test(deviceId)) throw new Error('invalid_session_fields');
   const startsAt = asDate(input.starts_at);
@@ -991,10 +1065,9 @@ function createClassSession(accessKey, input) {
 }
 
 function updateClassSessionStatus(accessKey, input) {
-  requireDashboardAccess(accessKey);
+  const actor = requireDashboardAccess(accessKey);
   requireV2Schema();
   const sessionId = requiredText(input || {}, 'session_id', 64);
-  const actor = requiredText(input || {}, 'actor', 80);
   const status = requiredText(input || {}, 'status', 16).toUpperCase();
   if (!['CLOSED', 'CANCELLED'].includes(status)) throw new Error('invalid_session_status');
 
@@ -1167,14 +1240,22 @@ function provisionDeviceFromProperties() {
   }
 }
 
-/** Hashes a one-time dashboard key and removes its plaintext property. */
-function provisionDashboardAccessFromProperties() {
+/** Installs the teacher account from one-time Script Properties. */
+function provisionDashboardAccountFromProperties() {
   const properties = PropertiesService.getScriptProperties();
-  const key = String(properties.getProperty('BOOTSTRAP_DASHBOARD_KEY') || '');
-  if (key.length < 12 || key.length > 127) {
-    throw new Error('Set BOOTSTRAP_DASHBOARD_KEY to 12-127 characters');
+  const name = String(properties.getProperty('BOOTSTRAP_TEACHER_USERNAME') || '').trim();
+  const password = String(properties.getProperty('BOOTSTRAP_TEACHER_PASSWORD') || '');
+  if (!name || name.length > 80 || password.length < 8 || password.length > 127) {
+    throw new Error('Set BOOTSTRAP_TEACHER_USERNAME and BOOTSTRAP_TEACHER_PASSWORD');
   }
-  properties.setProperty('DASHBOARD_ACCESS_HASH', hashSecret(key));
+  const salt = Utilities.getUuid();
+  properties.setProperty('DASHBOARD_USERNAME', name);
+  properties.setProperty('DASHBOARD_PASSWORD_SALT', salt);
+  properties.setProperty('DASHBOARD_PASSWORD_HASH', dashboardPasswordHash(salt, password));
+  properties.setProperty('DASHBOARD_CREDENTIAL_VERSION', Utilities.getUuid());
+  properties.deleteProperty('BOOTSTRAP_TEACHER_USERNAME');
+  properties.deleteProperty('BOOTSTRAP_TEACHER_PASSWORD');
+  properties.deleteProperty('DASHBOARD_ACCESS_HASH');
   properties.deleteProperty('BOOTSTRAP_DASHBOARD_KEY');
-  return {ok: true, dashboard_access_configured: true};
+  return {ok: true, teacher_name: name};
 }

@@ -26,13 +26,18 @@ trùng. Payload Phase 1 không có `type` vẫn được hiểu là `attendance`
 Mỗi lần sửa Apps Script cần tạo deployment version mới hoặc cập nhật deployment
 hiện tại. Không đưa `API_TOKEN` vào source control.
 
-Dashboard mới dành cho giáo viên đặt luồng hằng ngày ở đầu trang: chọn buổi,
-xem kết quả, tìm học sinh, chỉnh ngoại lệ và xuất CSV. **Bắt đầu buổi học mới**
-chỉ cần lớp, tiết, thời lượng; mã buổi, giờ bắt đầu và mốc đi muộn 10 phút
-được tự tạo. Thiết bị duy nhất được điền sẵn; nếu chưa có thiết bị hoặc muốn
-đổi giờ/mã buổi, mở **Tùy chọn nâng cao**. Lọc lịch sử và bảng chẩn đoán thiết
-bị nằm trong các mục thu gọn. Thay `Dashboard.html` cần update Web App
-deployment, nhưng không đổi schema Sheet hay `Code.gs` chỉ vì thay giao diện.
+Dashboard dành cho giáo viên đặt buổi đang hoạt động và máy điểm danh ở đầu trang;
+buổi cũ nằm trong mục lịch sử. Giao diện tiểu học dùng **Buổi sáng 07:00–10:30**
+và **Buổi chiều 14:00–16:30** (giờ Việt Nam) thay cho tiết học. Backend vẫn lưu
+nhãn đó trong cột `Period` hiện có, nên không cần đổi schema Sheet. Mốc đi
+muộn mặc định sau 10 phút. Nút một chạm chỉ gợi ý lớp có buổi gần đây **cùng
+Sáng/Chiều**, máy ONLINE và chưa có buổi tương ứng của lớp trong ngày; đây
+chưa phải thời khóa biểu tự động. **Bắt đầu buổi học mới** chỉ cần chọn lớp
+đang cấu hình và Sáng/Chiều; một máy được chọn sẵn, nhiều máy thì giáo viên
+chọn máy ngay trong biểu mẫu. Không có lớp/máy online thì không thể bấm bắt
+đầu. Giờ và mã buổi có thể đổi trong **Tùy chọn nâng cao**. Lọc lịch sử và
+bảng chẩn đoán thiết bị nằm trong các mục thu gọn. Thay cả `Code.gs` và
+`Dashboard.html` rồi cập nhật Web App deployment; không đổi schema Sheet.
 
 ## OTA P2.5
 
@@ -104,18 +109,26 @@ Trong Apps Script, tạo thêm một HTML file tên chính xác `Dashboard` rồ
 toàn bộ nội dung `Dashboard.html` từ repository. Không đổi tên file vì
 `doGet()` tải đúng tên này.
 
-Tạo khóa dashboard:
+Tạo tài khoản giáo viên trong Apps Script (không chép mật khẩu vào source):
 
-1. Trong Script Properties thêm `BOOTSTRAP_DASHBOARD_KEY`, dài 12–127 ký tự.
-2. Chạy `provisionDashboardAccessFromProperties`.
-3. Xác nhận property plaintext đã bị xóa và chỉ còn
-   `DASHBOARD_ACCESS_HASH`.
+1. Trong **Project Settings → Script Properties**, thêm
+   `BOOTSTRAP_TEACHER_USERNAME` = tài khoản giáo viên đã thống nhất và
+   `BOOTSTRAP_TEACHER_PASSWORD` = mật khẩu chủ dự án cấp.
+2. Chọn hàm `provisionDashboardAccountFromProperties`, bấm **Run** một lần và
+   cấp quyền nếu Apps Script yêu cầu.
+3. Xác nhận hai property `BOOTSTRAP_...` đã bị xóa. Chỉ còn
+   `DASHBOARD_USERNAME`, `DASHBOARD_PASSWORD_SALT`,
+   `DASHBOARD_PASSWORD_HASH` và `DASHBOARD_CREDENTIAL_VERSION`.
 4. Update Web App deployment sang version mới.
 5. Mở `<WEB_APP_EXEC_URL>?view=dashboard`.
 
 Web App vẫn để **Anyone** để ESP32 gọi API, nhưng mọi hàm đọc/sửa dữ liệu
-dashboard đều kiểm tra access key. Trình duyệt chỉ giữ key trong
-`sessionStorage`, không đưa key vào URL hoặc Sheet.
+dashboard đều kiểm tra phiên đăng nhập từ server. Mật khẩu không lưu trong
+trình duyệt; chỉ token phiên tối đa 6 giờ ở `sessionStorage`. Đăng xuất xóa
+token. CacheService có thể hết hạn sớm, khi đó đăng nhập lại. Sau 5 lần sai,
+tài khoản bị giới hạn đăng nhập 15 phút. AuditLog lấy tên giáo viên từ phiên,
+không tin tên tự gửi từ trình duyệt. Đổi mật khẩu: đặt lại hai property
+`BOOTSTRAP_...` rồi chạy lại hàm provisioning.
 
 Trước khi dùng dashboard, điền roster vào `Students`:
 
@@ -140,7 +153,14 @@ hiện bản tạm ngay rồi làm mới từ server. Trong lúc đồng bộ, n
 CSV bị khóa để tránh dùng dữ liệu cũ; nếu làm mới thất bại, bấm **Làm mới**.
 Sau khi thay `Code.gs` và `Dashboard.html`, cập nhật **deployment hiện tại**
 lên version mới và tải lại trang. Kiểm tra chuyển nhanh A → B → A không hiển
-thị nhầm buổi, rồi xuất CSV để đối chiếu cột `Session ID` và `Reason`.
+thị nhầm buổi, rồi xuất CSV để đối chiếu cột `Session ID` và `Reason`. Bản UX
+2026-10-02 thay **cả `Code.gs` và `Dashboard.html`** rồi cập nhật deployment:
+backend trả danh sách lớp từ `Classes` (hoặc roster `Students` nếu chưa cấu
+hình lớp) và số lượt Attendance nhận hôm nay chưa gắn vào session. Dashboard
+cảnh báo số lượt đó, không tự cộng chúng vào sĩ số hay tự gán lại vào buổi.
+Làm mới tự động mỗi 30 giây khi trang đang hiện; ở mạng chậm giáo viên có thể
+bấm **Làm mới danh sách**. Không cần chạy lại migration hoặc tạo Sheet mới chỉ
+để áp dụng thay đổi UX này.
 
 Session `ACTIVE` được chuyển thành `CLOSED` khi `Ends At` đã qua: dashboard/API
 thực hiện ngay khi có request, còn time-driven trigger xử lý tối đa trong năm

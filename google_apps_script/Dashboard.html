@@ -7,16 +7,22 @@
     :root { color-scheme: light; --ink:#172033; --muted:#667085; --line:#e4e7ec;
       --brand:#2357d9; --ok:#067647; --warn:#b54708; --bad:#b42318; --card:#fff; }
     * { box-sizing:border-box; }
-    body { margin:0; font:14px/1.45 system-ui,-apple-system,sans-serif;
+    body { margin:0; font:16px/1.5 system-ui,-apple-system,sans-serif;
       color:var(--ink); background:#f5f7fb; }
     header { background:#12213f; color:white; padding:18px max(20px,calc((100% - 1180px)/2)); }
     header h1 { margin:0; font-size:22px; } header p { margin:4px 0 0; opacity:.75; }
     main { max-width:1180px; margin:auto; padding:20px; }
     .card { background:var(--card); border:1px solid var(--line); border-radius:14px;
       padding:16px; box-shadow:0 2px 8px #1018280a; }
-    #login { max-width:440px; margin:60px auto; }
+    #login { max-width:440px; margin:60px auto; padding:28px; }
+    #login h2 { margin:0 0 4px; font-size:26px; }
+    #login button { width:100%; margin-top:12px; }
+    #login-error { color:var(--bad); min-height:24px; margin:10px 0 0; }
+    .app-top { display:flex; align-items:center; justify-content:space-between; gap:12px;
+      margin-bottom:16px; }
+    .app-top button { flex:none; }
     label { display:block; color:var(--muted); font-weight:600; margin-bottom:5px; }
-    input,select,textarea,button { font:inherit; min-height:40px; border-radius:8px; }
+    input,select,textarea,button { font:inherit; min-height:48px; border-radius:8px; }
     input,select,textarea { width:100%; border:1px solid #cbd1dc; padding:8px 10px; background:white; }
     button { border:0; padding:8px 14px; background:var(--brand); color:white;
       font-weight:700; cursor:pointer; }
@@ -29,11 +35,18 @@
       align-items:end; gap:10px; }
     .toolbar-actions { display:flex; gap:8px; align-items:end; }
     .toolbar-actions button { white-space:nowrap; }
+    .today-head { display:flex; justify-content:space-between; align-items:start; gap:12px; flex-wrap:wrap; }
+    .today-head h2 { margin:0; font-size:20px; }
+    .today-actions { display:flex; gap:8px; flex-wrap:wrap; margin-top:12px; }
+    .today-actions button { white-space:normal; text-align:left; }
+    .today-meta { margin-top:8px; }
     .session-heading { display:flex; justify-content:space-between; align-items:center; gap:12px; }
     .session-heading h2 { margin:0; }
-    .quick-form { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)) auto;
+    .quick-form { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)) auto;
       gap:10px; align-items:end; margin-top:12px; }
     .quick-form button { white-space:nowrap; }
+    .schedule-hint { grid-column:1/-1; margin:0; color:var(--muted); }
+    .quick-form .device-choice { min-width:180px; }
     .advanced-fields { grid-column:1/-1; margin:0; padding:0; }
     .advanced-fields .form-grid { margin-top:10px; }
     .secondary-panel { margin-top:16px; }
@@ -44,7 +57,7 @@
     .table-wrap { overflow:auto; }
     table { width:100%; border-collapse:collapse; min-width:850px; }
     th,td { padding:10px; border-bottom:1px solid var(--line); text-align:left; }
-    th { color:var(--muted); font-size:12px; text-transform:uppercase; }
+    th { color:var(--muted); font-size:14px; }
     .pill { display:inline-block; padding:4px 9px; border-radius:999px; font-weight:700;
       background:#eef2f7; }
     .PRESENT { color:var(--ok); background:#ecfdf3; }
@@ -55,12 +68,14 @@
     .OFFLINE { color:var(--bad); background:#fef3f2; }
     .DISABLED { color:var(--muted); background:#eef2f7; }
     .ACTIVE { color:var(--ok); background:#ecfdf3; }
+    .UPCOMING { color:var(--brand); background:#eff4ff; }
+    .EXPIRED { color:var(--warn); background:#fffaeb; }
     .CLOSED,.CANCELLED { color:var(--muted); background:#eef2f7; }
     .device-card { margin-bottom:16px; }
     .device-card table { min-width:1100px; }
     .device-card h2 { margin:0 0 4px; }
     .row-actions { white-space:nowrap; }
-    .row-actions button { min-height:34px; padding:5px 10px; }
+    .row-actions button { min-height:44px; padding:7px 12px; }
     dialog { border:1px solid var(--line); border-radius:14px; padding:22px;
       width:min(440px,calc(100vw - 32px)); box-shadow:0 18px 50px #10182844; }
     dialog::backdrop { background:#10182899; }
@@ -73,6 +88,8 @@
     .notice.error { display:block; color:var(--bad); background:#fef3f2; }
     .notice.ok { display:block; color:var(--ok); background:#ecfdf3; }
     .notice.loading { display:block; color:var(--brand); background:#eff4ff; }
+    .inline-warning { color:var(--warn); background:#fffaeb; padding:10px 12px;
+      border-radius:8px; margin:10px 0 0; }
     details { margin-top:16px; } summary { cursor:pointer; font-weight:700; }
     .form-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin-top:12px; }
     .form-actions { display:flex; gap:8px; align-items:end; }
@@ -83,47 +100,66 @@
       .toolbar,.form-grid,.quick-form { grid-template-columns:1fr; }
       .toolbar-actions { grid-column:1; }
       main { padding:12px; }
+      .quick-form button { width:100%; }
+      .roster-table,.roster-table tbody { display:block; min-width:0; }
+      .roster-table thead,.roster-table td:nth-child(1),
+      .roster-table td:nth-child(4),.roster-table td:nth-child(5) { display:none; }
+      .roster-table tr { display:grid; grid-template-columns:minmax(0,1fr) auto;
+        gap:4px 8px; padding:12px 0; border-bottom:1px solid var(--line); }
+      .roster-table td { border:0; padding:0; }
+      .roster-table td:nth-child(2) { grid-column:1; grid-row:1; font-weight:700;
+        overflow-wrap:anywhere; }
+      .roster-table td:nth-child(3) { grid-column:1; grid-row:2; }
+      .roster-table td:nth-child(6) { grid-column:2; grid-row:1/3; align-self:center; }
     }
   </style>
 </head>
 <body>
-  <header><h1>Robot Attendance</h1><p>Dashboard giáo viên · dữ liệu sinh trắc học không rời thiết bị</p></header>
+  <header><h1>Điểm danh học sinh</h1><p>Sổ điểm danh dành cho giáo viên</p></header>
   <main>
     <section id="login" class="card">
-      <h2>Đăng nhập dashboard</h2>
-      <p class="meta">Khóa chỉ được giữ trong phiên trình duyệt và không xuất hiện trong URL.</p>
+      <h2>Đăng nhập</h2>
+      <p class="meta">Sổ điểm danh dành cho giáo viên.</p>
       <form id="login-form">
-        <p><label for="actor">Giáo viên / người thao tác</label><input id="actor" required maxlength="80"></p>
-        <p><label for="access-key">Dashboard access key</label><input id="access-key" type="password" required minlength="12" autocomplete="current-password"></p>
-        <button type="submit">Mở dashboard</button>
+        <p><label for="teacher-name">Tài khoản giáo viên</label><input id="teacher-name" required maxlength="80" autocomplete="username"></p>
+        <p><label for="teacher-password">Mật khẩu</label><input id="teacher-password" type="password" required autocomplete="current-password"></p>
+        <button id="login-button" type="submit">Đăng nhập</button>
+        <p id="login-error" role="alert"></p>
       </form>
     </section>
 
     <section id="app" hidden>
-      <div class="card toolbar">
-        <div><label for="session">Buổi học đang xem</label><select id="session"></select></div>
-        <div id="session-status" class="pill" role="status">Chưa có buổi học</div>
-        <div class="toolbar-actions">
-          <button id="refresh" class="secondary">Làm mới</button>
-          <button id="export">Xuất CSV</button>
+      <div class="app-top"><span id="teacher-label"></span><button id="logout" class="secondary" type="button">Đăng xuất</button></div>
+      <section id="today" class="card" aria-labelledby="today-title">
+        <div class="today-head">
+          <div><h2 id="today-title">Hôm nay</h2><p id="today-summary" class="meta">Đang tải dữ liệu…</p></div>
+          <div id="session-status" class="pill" role="status">Chưa có buổi học</div>
         </div>
-      </div>
+        <p id="device-readiness" class="meta today-meta" role="status"></p>
+        <p id="unassigned-warning" class="inline-warning" role="status" hidden></p>
+        <div class="today-actions">
+          <button id="repeat-session" type="button" hidden>Bắt đầu buổi này</button>
+          <button id="view-active" type="button" class="secondary" hidden>Xem buổi đang diễn ra</button>
+          <button id="refresh" type="button" class="secondary">Làm mới danh sách</button>
+        </div>
+        <p id="repeat-hint" class="meta" hidden></p>
+      </section>
       <div id="notice" class="notice" role="status" aria-live="polite"></div>
       <details id="quick-start" class="card secondary-panel">
-        <summary>Bắt đầu buổi học mới</summary>
-        <p class="meta">Chọn lớp, tiết và thời lượng; hệ thống tự đặt giờ bắt đầu, mốc đi muộn và mã buổi. Không cần nhập lại cấu hình thiết bị mỗi ngày.</p>
+        <summary id="quick-start-label">Bắt đầu buổi học mới</summary>
+        <p class="meta">Chọn lớp và buổi học. Giờ bắt đầu, kết thúc và mã buổi được điền tự động.</p>
         <form id="session-form" class="quick-form">
-          <div><label for="new-class">Lớp</label><input id="new-class" name="class_id" list="known-classes" required placeholder="12A1"><datalist id="known-classes"></datalist></div>
-          <div><label for="new-period">Tiết</label><input id="new-period" name="period" required value="P1" maxlength="24"></div>
-          <div><label for="duration-minutes">Thời lượng</label><select id="duration-minutes" name="duration_minutes"><option value="45">45 phút</option><option value="90">90 phút</option><option value="120">120 phút</option></select></div>
-          <button type="submit">Bắt đầu điểm danh</button>
+          <div><label for="new-class">Lớp</label><select id="new-class" name="class_id" required><option value="">Chọn lớp</option></select></div>
+          <div><label for="new-shift">Buổi học</label><select id="new-shift" name="period" required><option value="Sáng">Buổi sáng · 07:00–10:30</option><option value="Chiều">Buổi chiều · 14:00–16:30</option></select></div>
+          <div id="device-choice" class="device-choice" hidden><label for="new-device">Máy điểm danh</label><select id="new-device" name="device_id"></select></div>
+          <button id="start-session" type="submit">Bắt đầu điểm danh</button>
+          <p id="schedule-hint" class="schedule-hint" role="status"></p>
           <details id="session-advanced" class="advanced-fields">
-            <summary>Tùy chọn nâng cao: giờ, đi muộn, thiết bị, mã buổi</summary>
+            <summary>Tùy chọn nâng cao: đổi giờ, mốc đi muộn hoặc mã buổi</summary>
             <div class="form-grid">
-              <div><label for="new-start">Bắt đầu lúc</label><input id="new-start" name="starts_at" type="datetime-local"><small>Để trống = bây giờ</small></div>
+              <div><label for="new-start">Bắt đầu lúc</label><input id="new-start" name="starts_at" type="datetime-local"><small>Để trống = 07:00 hoặc 14:00</small></div>
               <div><label for="new-late">Đi muộn sau</label><input id="new-late" name="late_minutes" type="number" min="0" max="240" value="10"><small>Phút tính từ giờ bắt đầu</small></div>
-              <div><label for="new-end">Kết thúc lúc</label><input id="new-end" name="ends_at" type="datetime-local"><small>Để trống = theo thời lượng</small></div>
-              <div><label for="new-device">Thiết bị</label><input id="new-device" name="device_id" list="known-devices" placeholder="robot-01"><datalist id="known-devices"></datalist></div>
+              <div><label for="new-end">Kết thúc lúc</label><input id="new-end" name="ends_at" type="datetime-local"><small>Để trống = 10:30 hoặc 16:30</small></div>
               <div><label for="new-session-id">Mã buổi (tùy chọn)</label><input id="new-session-id" name="session_id" maxlength="64" placeholder="Tự tạo nếu bỏ trống"></div>
             </div>
           </details>
@@ -140,10 +176,11 @@
         <div class="roster-heading">
           <h2>Danh sách điểm danh</h2>
           <div class="roster-search"><label for="student-filter">Tìm học sinh</label><input id="student-filter" placeholder="Tên hoặc mã học sinh"></div>
+          <button id="export" class="secondary" type="button">Xuất CSV buổi đang xem</button>
           <button id="close-session" class="danger">Đóng buổi học</button>
         </div>
         <p id="session-meta" class="meta"></p>
-        <table>
+        <table class="roster-table">
           <thead><tr><th>Mã</th><th>Họ tên</th><th>Trạng thái</th><th>Thời gian</th><th>Độ tin cậy</th><th>Điều chỉnh</th></tr></thead>
           <tbody id="student-rows"></tbody>
         </table>
@@ -163,6 +200,12 @@
         </form>
       </dialog>
 
+      <details id="history-panel" class="card secondary-panel">
+        <summary>Xem buổi học khác và lịch sử</summary>
+        <div class="toolbar">
+          <div><label for="session">Buổi học đang xem</label><select id="session"></select></div>
+        </div>
+      </details>
       <details class="card secondary-panel">
         <summary>Lọc buổi cũ theo lớp hoặc ngày</summary>
         <div class="form-grid">
@@ -184,9 +227,70 @@
     const labels = {PRESENT:'Có mặt',LATE:'Đi muộn',ABSENT:'Vắng',EXCUSED:'Có phép'};
     const sessionLabels = {ACTIVE:'Đang điểm danh',CLOSED:'Đã kết thúc',CANCELLED:'Đã hủy'};
     const deviceLabels = {ONLINE:'Online',OFFLINE:'Offline',DISABLED:'Đã tắt'};
+    const schoolTimeZone = 'Asia/Ho_Chi_Minh';
+    const shiftHours = {
+      'Sáng':{start:'07:00',end:'10:30'},
+      'Chiều':{start:'14:00',end:'16:30'},
+    };
     let state = {key:'', actor:'', data:null, cache:Object.create(null), loadToken:0,
-      pending:false, stale:false, mutating:false, correction:null};
+      pending:false, stale:false, mutating:false, correction:null,
+      repeatCandidate:null, shiftTouched:false};
     const byId = (id) => document.getElementById(id);
+
+    function vietnamDateParts(date) {
+      const parts = new Intl.DateTimeFormat('en-US', {
+        timeZone:schoolTimeZone, year:'numeric',month:'2-digit',day:'2-digit',
+        hour:'2-digit',hourCycle:'h23',minute:'2-digit',
+      }).formatToParts(date);
+      const field = (name) => parts.find((item) => item.type === name).value;
+      return {date:`${field('year')}-${field('month')}-${field('day')}`,
+        hour:Number(field('hour')),minute:Number(field('minute'))};
+    }
+    function recommendedShift(now=new Date()) {
+      const time = vietnamDateParts(now);
+      return time.hour * 60 + time.minute < 10 * 60 + 30 ? 'Sáng' : 'Chiều';
+    }
+    function scheduleForShift(period, date) {
+      const hours = shiftHours[period];
+      if (!hours) throw new Error('Hãy chọn Buổi sáng hoặc Buổi chiều.');
+      const day = vietnamDateParts(date).date;
+      return {start:new Date(`${day}T${hours.start}:00+07:00`),
+        end:new Date(`${day}T${hours.end}:00+07:00`)};
+    }
+    function parseVietnamDateTime(value) {
+      const text = String(value || '').trim();
+      return new Date(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?$/.test(text) ?
+        `${text}${text.length === 16 ? ':00' : ''}+07:00` : text);
+    }
+    function updateScheduleHint(now=new Date()) {
+      const period = byId('new-shift').value;
+      const hours = shiftHours[period];
+      if (!hours) return;
+      if (byId('new-class').children.length <= 1) {
+        byId('schedule-hint').textContent =
+          'Chưa có lớp trong hệ thống. Nhờ người quản trị thêm danh sách học sinh.';
+        return;
+      }
+      const schedule = scheduleForShift(period, now);
+      byId('start-session').textContent = now < schedule.start ?
+        'Chuẩn bị buổi học' : 'Bắt đầu điểm danh';
+      const classId = byId('new-class').value;
+      const today = vietnamDateParts(now).date;
+      if (classId && state.data && state.data.sessions.some((item) =>
+        item.class_id === classId && item.period === period &&
+        Number.isFinite(Date.parse(item.starts_at)) &&
+        vietnamDateParts(new Date(item.starts_at)).date === today)) {
+        byId('schedule-hint').textContent =
+          `Lớp ${classId} đã có buổi ${period.toLowerCase()} hôm nay. Hãy xem buổi đó trong lịch sử.`;
+        return;
+      }
+      const ended = schedule.end <= now;
+      byId('schedule-hint').textContent = ended ?
+        `Buổi ${period.toLowerCase()} hôm nay đã qua giờ kết thúc. Hãy chọn buổi khác hoặc dùng Tùy chọn nâng cao.` :
+        `Buổi ${period.toLowerCase()}: ${hours.start}–${hours.end}; đi muộn sau 10 phút. ` +
+          (now > schedule.start ? 'Lượt quét trước khi mở buổi có thể chưa được gắn vào buổi. ' : '') +
+          'Buổi sẽ tự kết thúc theo giờ đã đặt.';
+    }
 
     function showNotice(message, type='error') {
       const node = byId('notice'); node.textContent = message || '';
@@ -199,12 +303,14 @@
         unknown_session_or_student:'Không tìm thấy buổi học hoặc học sinh.',
         student_not_in_session_class:'Học sinh không thuộc lớp của buổi học này.',
         session_not_active:'Buổi học không còn ở trạng thái hoạt động.',
-        device_has_active_session:'Thiết bị đang có buổi học hoạt động. Hãy đóng buổi đó trước khi bắt đầu buổi mới.',
-        session_exists:'Mã buổi đã tồn tại. Hãy đổi mã trong Tùy chọn nâng cao.',
-        invalid_session_time:'Mốc bắt đầu, đi muộn và kết thúc chưa hợp lệ.',
-        invalid_session_fields:'Mã buổi hoặc Device ID có ký tự không hợp lệ.',
+        device_has_active_session:'Máy điểm danh đang phục vụ buổi khác. Hãy kết thúc buổi đó trước.',
+        session_exists:'Buổi học này đã được tạo. Hãy làm mới và kiểm tra lịch sử.',
+        invalid_session_time:'Giờ bắt đầu, đi muộn hoặc kết thúc chưa hợp lệ.',
+        invalid_session_fields:'Mã buổi hoặc mã máy có ký tự không hợp lệ.',
         invalid_status:'Trạng thái điểm danh không hợp lệ.',
         dashboard_unauthorized:'Phiên đăng nhập không hợp lệ. Vui lòng đăng nhập lại.',
+        dashboard_login_failed:'Tài khoản hoặc mật khẩu không đúng.',
+        dashboard_login_limited:'Đăng nhập sai quá nhiều lần. Vui lòng thử lại sau 15 phút.',
       };
       return errors[message] || message;
     }
@@ -212,8 +318,12 @@
       const message = error && error.message ? error.message : String(error);
       showNotice(friendlyError(message));
       if (message.includes('dashboard_unauthorized')) {
-        sessionStorage.removeItem('attendanceDashboardKey');
+        ++state.loadToken;
+        sessionStorage.removeItem('attendanceDashboardToken');
+        sessionStorage.removeItem('attendanceDashboardActor');
+        state.key=''; state.actor=''; state.data=null;
         byId('app').hidden = true; byId('login').hidden = false;
+        byId('login-error').textContent=friendlyError(message);
       }
     }
     function setDashboardPending(pending) {
@@ -223,7 +333,14 @@
       byId('app').setAttribute('aria-busy', String(pending));
       byId('export').disabled = blocked || !selected;
       byId('refresh').disabled = pending || state.mutating;
+      byId('repeat-session').disabled = blocked || !state.repeatCandidate;
+      byId('view-active').disabled = blocked;
       byId('close-session').disabled = blocked || !selected || selected.status !== 'ACTIVE';
+      const classId = byId('new-class').value;
+      const device = state.data && (state.data.devices || []).find((item) =>
+        item.device_id === byId('new-device').value);
+      byId('start-session').disabled = blocked || !classId || !device ||
+        device.status !== 'ONLINE';
       byId('student-rows').querySelectorAll('select,button').forEach((control) => {
         control.disabled = blocked;
       });
@@ -243,6 +360,7 @@
       setDashboardPending(state.pending);
     }
     function renderMutation(data) {
+      if (!state.key) return;
       ++state.loadToken;
       state.stale = false;
       render(data);
@@ -253,6 +371,7 @@
         byId('correction-dialog').close(); state.correction=null;
       }
       const token = ++state.loadToken;
+      const sessionToken = state.key;
       if (useCache && state.cache[sessionId]) render(state.cache[sessionId]);
       if (!quiet) {
         state.stale = false;
@@ -260,13 +379,15 @@
         showNotice('Đang cập nhật dữ liệu buổi học…', 'loading');
       }
       google.script.run.withSuccessHandler((data) => {
-        if (token !== state.loadToken || (quiet && state.mutating)) return;
+        if (token !== state.loadToken || sessionToken !== state.key ||
+            (quiet && state.mutating)) return;
         state.stale = false;
         render(data);
         setDashboardPending(false);
         if (!quiet) showNotice('');
       }).withFailureHandler((error) => {
-        if (token !== state.loadToken || (quiet && state.mutating)) return;
+        if (token !== state.loadToken || sessionToken !== state.key ||
+            (quiet && state.mutating)) return;
         state.stale = true;
         setDashboardPending(false);
         fail(error);
@@ -286,36 +407,111 @@
       const classFilter = byId('class-filter');
       const previousClass = classFilter.value;
       classFilter.replaceChildren(new Option('Tất cả',''));
-      const classIds = [...new Set(data.sessions.map((item) => item.class_id))].sort();
-      classIds.forEach((classId) => {
+      const configuredClassIds = [...new Set(Array.isArray(data.classes) ?
+        data.classes : [])].sort();
+      const historyClassIds = [...new Set(data.sessions.map((item) => item.class_id)
+        .concat(configuredClassIds))].sort();
+      historyClassIds.forEach((classId) => {
         classFilter.appendChild(new Option(classId,classId));
       });
       classFilter.value = previousClass;
-      const classSuggestions = byId('known-classes'); classSuggestions.replaceChildren();
-      classIds.forEach((classId) => classSuggestions.appendChild(new Option(classId,classId)));
-      const deviceSuggestions = byId('known-devices'); deviceSuggestions.replaceChildren();
+      const classSelect = byId('new-class');
+      const previousNewClass = classSelect.value;
+      classSelect.replaceChildren(new Option('Chọn lớp',''));
+      configuredClassIds.forEach((classId) => classSelect.appendChild(new Option(classId,classId)));
+      classSelect.value = configuredClassIds.includes(previousNewClass) ? previousNewClass :
+        (configuredClassIds.length === 1 ? configuredClassIds[0] : '');
       const devices = Array.isArray(data.devices) ? data.devices : [];
-      devices.forEach((device) => deviceSuggestions.appendChild(
-        new Option(device.device_id, device.device_id)));
-      if (!byId('new-device').value) {
-        if (devices.length === 1) byId('new-device').value = devices[0].device_id;
-        else if (selected && selected.device_id) byId('new-device').value = selected.device_id;
-      }
+      const deviceSelect = byId('new-device');
+      const previousDevice = deviceSelect.value;
+      deviceSelect.replaceChildren(new Option('Chọn máy điểm danh',''));
+      devices.forEach((device) => deviceSelect.appendChild(
+        new Option(`${device.device_id} · ${deviceLabels[device.status] || device.status}`,
+          device.device_id)));
+      deviceSelect.value = devices.some((device) => device.device_id === previousDevice) ?
+        previousDevice : (devices.length === 1 ? devices[0].device_id :
+          (selected && devices.some((device) => device.device_id === selected.device_id) ?
+            selected.device_id : ''));
+      byId('device-choice').hidden = devices.length <= 1;
+      if (!state.shiftTouched) byId('new-shift').value = recommendedShift();
+      updateScheduleHint();
       fillSessionOptions(selected ? selected.session_id : '');
       ['total','present','late','absent','excused'].forEach((key) => {
         byId(key).textContent = data.summary[key];
       });
       const sessionStatus = byId('session-status');
-      sessionStatus.textContent = selected ? sessionLabels[selected.status] || selected.status :
-        'Chưa có buổi học';
-      sessionStatus.className = `pill ${selected ? selected.status : ''}`;
+      const active = data.sessions.find((item) => item.status === 'ACTIVE');
+      const activeExpired = active && Date.parse(active.ends_at) <= Date.now();
+      const activeHasStarted = active && Date.parse(active.starts_at) <= Date.now();
+      sessionStatus.textContent = active ?
+        (activeExpired ? 'Đã hết giờ' : (activeHasStarted ? 'Đang điểm danh' : 'Sắp bắt đầu')) :
+        'Chưa có buổi đang mở';
+      sessionStatus.className = `pill ${active ?
+        (activeExpired ? 'EXPIRED' : (activeHasStarted ? 'ACTIVE' : 'UPCOMING')) : ''}`;
+      byId('today-title').textContent = active ?
+        (activeExpired ? 'Buổi đã hết giờ, đang chờ đóng' :
+          (activeHasStarted ? 'Buổi học đang diễn ra' : 'Buổi học đã lên lịch')) : 'Hôm nay';
+      byId('today-summary').textContent = active ?
+        `${active.class_id} · ${active.period} · ${activeExpired ? 'hết giờ lúc' :
+          (activeHasStarted ? 'kết thúc' : 'bắt đầu')} ` +
+          `${new Date(activeHasStarted ? active.ends_at : active.starts_at).toLocaleTimeString('vi-VN',{timeZone:schoolTimeZone,hour:'2-digit',minute:'2-digit'})}` :
+        'Chưa có buổi điểm danh đang mở. Bắt đầu buổi mới khi lớp sẵn sàng.';
+      byId('view-active').hidden = !active || (selected && active.session_id === selected.session_id);
+      const desiredShift = recommendedShift();
+      const currentShift = scheduleForShift(desiredShift,new Date());
+      const todayInVietnam = vietnamDateParts(new Date()).date;
+      const recent = currentShift.end > new Date() &&
+        data.sessions.find((item) =>
+        item.status === 'CLOSED' && item.period === desiredShift &&
+        configuredClassIds.includes(item.class_id) && item.device_id &&
+        Number.isFinite(Date.parse(item.starts_at)) &&
+        Date.now() - Date.parse(item.starts_at) < 30 * 86400000 &&
+        Date.now() >= Date.parse(item.starts_at) &&
+        !data.sessions.some((other) => other.class_id === item.class_id &&
+          other.period === desiredShift &&
+          Number.isFinite(Date.parse(other.starts_at)) &&
+          vietnamDateParts(new Date(other.starts_at)).date === todayInVietnam));
+      const recentDevice = recent && devices.find((item) => item.device_id === recent.device_id);
+      state.repeatCandidate = !active && recent && recentDevice &&
+        recentDevice.status === 'ONLINE' ?
+        {class_id:recent.class_id, period:recent.period, device_id:recent.device_id,
+          late_minutes:'10'} : null;
+      const repeat = byId('repeat-session');
+      repeat.hidden = !state.repeatCandidate;
+      if (state.repeatCandidate) {
+        const hours = shiftHours[recent.period];
+        repeat.textContent =
+          `${new Date() < currentShift.start ? 'Chuẩn bị' : 'Bắt đầu'} ` +
+          `${recent.period.toLowerCase()} · lớp ${recent.class_id}`;
+        byId('repeat-hint').textContent =
+          `Giờ ${hours.start}–${hours.end}. Kiểm tra đúng lớp trước khi bấm.`;
+      }
+      byId('repeat-hint').hidden = !state.repeatCandidate;
+      const deviceId = active ? active.device_id :
+        (state.repeatCandidate ? state.repeatCandidate.device_id : byId('new-device').value);
+      const device = devices.find((item) => item.device_id === deviceId);
+      byId('device-readiness').textContent = device ?
+        `Máy điểm danh ${device.device_id}: ${deviceLabels[device.status] || device.status}` +
+          (device.status !== 'ONLINE' ? ' · chưa thể bắt đầu buổi mới' : '') +
+          (device.pending_events ? ` · ${device.pending_events} sự kiện chờ đồng bộ` : '') :
+        (devices.length > 1 ? 'Chọn máy điểm danh trong biểu mẫu bên dưới.' :
+          'Chưa có máy điểm danh. Nhờ người quản trị kiểm tra kết nối.');
+      const unassigned = Number(data.unassigned_today || 0);
+      byId('unassigned-warning').hidden = unassigned === 0;
+      byId('unassigned-warning').textContent = unassigned > 0 ?
+        `${unassigned} lượt được robot gửi hôm nay chưa thuộc buổi học nào; không tính vào sĩ số. Kiểm tra giờ mở buổi và lớp học.` : '';
+      byId('quick-start-label').textContent = active ?
+        'Tạo buổi khác (cần kết thúc buổi hiện tại trên cùng robot)' :
+        'Bắt đầu buổi học mới';
+      if (active) byId('quick-start').open = false;
       byId('session-meta').textContent = selected ?
-        `${selected.class_id} · ${selected.period} · ${new Date(selected.starts_at).toLocaleString('vi-VN')} → ${new Date(selected.ends_at).toLocaleString('vi-VN')} · Mã buổi: ${selected.session_id}` :
+        `${selected.class_id} · ${selected.period} · ${new Date(selected.starts_at).toLocaleString('vi-VN',{timeZone:schoolTimeZone})} → ${new Date(selected.ends_at).toLocaleString('vi-VN',{timeZone:schoolTimeZone})} · Mã buổi: ${selected.session_id}` :
         'Chưa có buổi học. Mở “Bắt đầu buổi học mới” ở phía trên.';
-      if (!selected && data.sessions.length === 0) byId('quick-start').open = true;
+      if (!active && !state.repeatCandidate) byId('quick-start').open = true;
       byId('close-session').disabled = !selected || selected.status !== 'ACTIVE';
       renderDevices();
       renderRows();
+      setDashboardPending(state.pending);
     }
     function filteredSessions() {
       if (!state.data) return [];
@@ -330,7 +526,7 @@
         String(right.starts_at).localeCompare(String(left.starts_at)));
       sessions.forEach((item) => {
         const option = document.createElement('option'); option.value = item.session_id;
-        option.textContent = `${item.class_id} · ${item.period} · ${new Date(item.starts_at).toLocaleDateString('vi-VN')} · ${sessionLabels[item.status] || item.status}`;
+        option.textContent = `${item.class_id} · ${item.period} · ${new Date(item.starts_at).toLocaleDateString('vi-VN',{timeZone:schoolTimeZone})} · ${sessionLabels[item.status] || item.status}`;
         option.title = `Mã buổi: ${item.session_id}`;
         option.selected = item.session_id === preferredId;
         select.appendChild(option);
@@ -345,8 +541,9 @@
     }
     function generatedSessionId(classId, period, start) {
       const pad = (number) => String(number).padStart(2,'0');
-      const date = `${start.getFullYear()}${pad(start.getMonth()+1)}${pad(start.getDate())}`;
-      const time = `${pad(start.getHours())}${pad(start.getMinutes())}`;
+      const local = vietnamDateParts(start);
+      const date = local.date.replaceAll('-','');
+      const time = `${pad(local.hour)}${pad(local.minute)}`;
       const base = `${date}-${sessionSlug(classId)}-${sessionSlug(period)}-${time}`.slice(0,56);
       const existing = new Set((state.data && state.data.sessions || [])
         .map((session) => session.session_id));
@@ -358,19 +555,42 @@
       const classId = String(values.class_id || '').trim();
       const period = String(values.period || '').trim();
       const deviceId = String(values.device_id || '').trim();
-      const duration = Number(values.duration_minutes);
-      const lateMinutes = Number(values.late_minutes);
-      const startsAt = values.starts_at ? new Date(values.starts_at) : now;
-      const endsAt = values.ends_at ? new Date(values.ends_at) :
-        new Date(startsAt.getTime() + duration * 60000);
+      const lateMinutes = Number(values.late_minutes == null ||
+        values.late_minutes === '' ? 10 : values.late_minutes);
+      if (!classId) throw new Error('Hãy chọn lớp.');
+      if (!shiftHours[period]) throw new Error('Hãy chọn Buổi sáng hoặc Buổi chiều.');
+      if (!deviceId) throw new Error('Chưa có máy điểm danh. Nhờ người quản trị kiểm tra.');
+      if (state.data && Array.isArray(state.data.classes) &&
+          !state.data.classes.includes(classId)) {
+        throw new Error('Lớp này không còn trong danh sách hiện tại. Hãy làm mới.');
+      }
+      if (state.data && Array.isArray(state.data.devices) &&
+          !state.data.devices.some((device) =>
+            device.device_id === deviceId && device.status === 'ONLINE')) {
+        throw new Error('Máy điểm danh chưa trực tuyến. Hãy kiểm tra máy và làm mới.');
+      }
+      const startsAt = values.starts_at ? parseVietnamDateTime(values.starts_at) :
+        scheduleForShift(period, now).start;
+      if (!Number.isFinite(startsAt.getTime())) {
+        throw new Error('Giờ bắt đầu không hợp lệ.');
+      }
+      const endsAt = values.ends_at ? parseVietnamDateTime(values.ends_at) :
+        scheduleForShift(period, startsAt).end;
       const lateAfter = new Date(startsAt.getTime() + lateMinutes * 60000);
-      if (!classId || !period) throw new Error('Bạn cần chọn lớp và tiết học.');
-      if (!deviceId) throw new Error('Chưa có thiết bị. Mở Tùy chọn nâng cao để nhập Device ID.');
-      if (!Number.isInteger(duration) || duration < 1 || duration > 240 ||
-          !Number.isInteger(lateMinutes) || lateMinutes < 0 || lateMinutes > 240 ||
+      if (!Number.isInteger(lateMinutes) || lateMinutes < 0 || lateMinutes > 240 ||
           !Number.isFinite(startsAt.getTime()) || !Number.isFinite(endsAt.getTime()) ||
-          lateAfter > endsAt || startsAt > endsAt) {
-        throw new Error('Thời gian buổi học không hợp lệ; kiểm tra thời lượng và mốc đi muộn.');
+          lateAfter > endsAt || startsAt >= endsAt) {
+        throw new Error('Giờ bắt đầu, đi muộn hoặc kết thúc chưa hợp lệ.');
+      }
+      if (endsAt <= now) {
+        throw new Error(`Buổi ${period.toLowerCase()} đã qua giờ kết thúc. Chọn buổi khác hoặc đổi giờ trong Tùy chọn nâng cao.`);
+      }
+      const day = vietnamDateParts(startsAt).date;
+      if (state.data && (state.data.sessions || []).some((item) =>
+        item.class_id === classId && item.period === period &&
+        Number.isFinite(Date.parse(item.starts_at)) &&
+        vietnamDateParts(new Date(item.starts_at)).date === day)) {
+        throw new Error(`Lớp ${classId} đã có buổi ${period.toLowerCase()} ngày này. Hãy xem buổi đã tạo.`);
       }
       return {
         session_id:String(values.session_id || '').trim() ||
@@ -479,14 +699,17 @@
       if (status === student.status) { showNotice('Trạng thái chưa thay đổi.'); return; }
       if (!reason) { showNotice('Bạn cần nhập lý do điều chỉnh.'); return; }
       const button=byId('correction-save'); button.textContent='Đang lưu…';
+      const sessionToken=state.key;
       setMutating(true);
       showNotice('Đang ghi điều chỉnh…','ok');
       google.script.run.withSuccessHandler((data) => {
+        if (sessionToken !== state.key) return;
         byId('correction-dialog').close(); state.correction=null;
         button.textContent='Lưu điều chỉnh';
         renderMutation(data);
         showNotice(`Đã đổi ${student.name} thành “${labels[status]}” và ghi AuditLog.`,'ok');
       }).withFailureHandler((error) => {
+        if (sessionToken !== state.key) return;
         button.textContent='Lưu điều chỉnh';
         setMutating(false);
         fail(error);
@@ -518,15 +741,42 @@
       URL.revokeObjectURL(link.href);
     }
     byId('login-form').onsubmit = (event) => {
-      event.preventDefault(); state.actor=byId('actor').value.trim(); state.key=byId('access-key').value;
-      state.cache=Object.create(null); state.data=null; state.stale=false;
-      sessionStorage.setItem('attendanceDashboardKey',state.key);
-      sessionStorage.setItem('attendanceDashboardActor',state.actor); load();
+      event.preventDefault();
+      const button=byId('login-button'); button.disabled=true;
+      byId('login-error').textContent='Đang đăng nhập…';
+      google.script.run.withSuccessHandler((result) => {
+        button.disabled=false; byId('teacher-password').value='';
+        state.key=result.token; state.actor=result.teacher_name;
+        state.cache=Object.create(null); state.data=null; state.stale=false;
+        sessionStorage.setItem('attendanceDashboardToken',state.key);
+        sessionStorage.setItem('attendanceDashboardActor',state.actor);
+        byId('teacher-label').textContent='Xin chào, '+state.actor;
+        byId('login-error').textContent=''; load();
+      }).withFailureHandler((error) => {
+        button.disabled=false; byId('teacher-password').value='';
+        byId('login-error').textContent=friendlyError(error && error.message || String(error));
+      }).loginDashboard(byId('teacher-name').value.trim(),byId('teacher-password').value);
+    };
+    byId('logout').onclick = () => {
+      if (state.key) google.script.run.logoutDashboard(state.key);
+      ++state.loadToken;
+      state.key=''; state.actor=''; state.data=null; state.cache=Object.create(null);
+      sessionStorage.removeItem('attendanceDashboardToken');
+      sessionStorage.removeItem('attendanceDashboardActor');
+      byId('app').hidden=true; byId('login').hidden=false;
+      byId('teacher-password').value='';
     };
     byId('session').onchange = (event) => load(event.target.value, true);
     byId('class-filter').onchange = applySessionFilters;
     byId('date-filter').onchange = applySessionFilters;
     byId('student-filter').oninput = renderRows;
+    byId('new-class').onchange = () => {
+      updateScheduleHint(); setDashboardPending(state.pending);
+    };
+    byId('new-device').onchange = () => setDashboardPending(state.pending);
+    byId('new-shift').onchange = () => {
+      state.shiftTouched=true; updateScheduleHint();
+    };
     byId('correction-form').onsubmit = saveCorrection;
     byId('correction-cancel').onclick = () => {
       if (!state.mutating) { byId('correction-dialog').close(); state.correction=null; }
@@ -535,53 +785,81 @@
       if (state.mutating) event.preventDefault(); else state.correction=null;
     };
     byId('refresh').onclick = () => load(byId('session').value);
+    byId('view-active').onclick = () => {
+      const active = state.data && state.data.sessions.find((item) => item.status === 'ACTIVE');
+      if (active) load(active.session_id);
+    };
     byId('export').onclick = exportCsv;
     byId('close-session').onclick = () => {
-      if (state.pending || state.stale || state.mutating || !state.data.selected_session ||
-          !confirm('Đóng buổi học này?')) return;
+      if (state.pending || state.stale || state.mutating || !state.data.selected_session) return;
+      const current = state.data.selected_session;
+      if (!confirm(`Kết thúc điểm danh buổi ${current.period} lớp ${current.class_id}?`)) return;
       const sessionId = state.data.selected_session.session_id;
       const button=byId('close-session'); button.textContent='Đang đóng…';
+      const sessionToken=state.key;
       setMutating(true);
       showNotice('Đang đóng buổi học…','ok');
       google.script.run.withSuccessHandler((data) => {
+        if (sessionToken !== state.key) return;
         renderMutation(data); button.textContent='Đóng buổi học';
         showNotice('Đã đóng buổi học.','ok');
       }).withFailureHandler((error) => {
+        if (sessionToken !== state.key) return;
         button.textContent='Đóng buổi học'; setMutating(false); fail(error);
       }).updateClassSessionStatus(state.key, {
           session_id:sessionId,status:'CLOSED',actor:state.actor,
           reason:'Closed from teacher dashboard',
         });
     };
+    function startSession(values, resetForm=false) {
+      if (state.pending || state.stale || state.mutating) return;
+      const startsLater = Date.parse(values.starts_at) > Date.now();
+      const sessionToken=state.key;
+      setMutating(true);
+      showNotice(startsLater ? 'Đang chuẩn bị buổi học…' : 'Đang tạo buổi học…','loading');
+      google.script.run.withSuccessHandler((data) => {
+        if (sessionToken !== state.key) return;
+        byId('class-filter').value=''; byId('date-filter').value='';
+        if (resetForm) { byId('session-form').reset(); state.shiftTouched=false; }
+        renderMutation(data);
+        byId('quick-start').open=false;
+        showNotice(startsLater ?
+          `Đã chuẩn bị buổi học. Máy sẽ ghi nhận từ ${new Date(values.starts_at).toLocaleTimeString('vi-VN',{timeZone:schoolTimeZone,hour:'2-digit',minute:'2-digit'})}.` :
+          'Buổi học đã bắt đầu. Máy sẽ ghi nhận điểm danh tự động.','ok');
+      }).withFailureHandler((error) => {
+        if (sessionToken !== state.key) return;
+        setMutating(false); fail(error);
+      }).createClassSession(state.key,values);
+    }
+    byId('repeat-session').onclick = () => {
+      if (!state.repeatCandidate || state.pending || state.stale || state.mutating) return;
+      try {
+        startSession(buildQuickSessionInput(state.repeatCandidate));
+      } catch (error) { fail(error); }
+    };
     byId('session-form').onsubmit = (event) => {
       event.preventDefault();
       if (state.pending || state.stale || state.mutating) return;
-      let values;
       try {
-        values=buildQuickSessionInput(Object.fromEntries(new FormData(event.target)));
+        startSession(buildQuickSessionInput(Object.fromEntries(new FormData(event.target))),true);
       } catch (error) {
         byId('session-advanced').open = true;
         fail(error);
-        return;
       }
-      setMutating(true);
-      showNotice('Đang tạo buổi học…','loading');
-      google.script.run.withSuccessHandler((data) => {
-        byId('class-filter').value=''; byId('date-filter').value='';
-        renderMutation(data); event.target.reset(); byId('quick-start').open=false;
-        showNotice('Buổi học đã bắt đầu. Robot sẽ ghi nhận điểm danh tự động.','ok');
-      }).withFailureHandler((error) => {
-        setMutating(false); fail(error);
-      }).createClassSession(state.key,values);
     };
-    state.key=sessionStorage.getItem('attendanceDashboardKey')||'';
+    sessionStorage.removeItem('attendanceDashboardKey');
+    state.key=sessionStorage.getItem('attendanceDashboardToken')||'';
     state.actor=sessionStorage.getItem('attendanceDashboardActor')||'';
-    if (state.key && state.actor) { byId('actor').value=state.actor; load(); }
+    if (state.key && state.actor) {
+      byId('teacher-name').value=state.actor;
+      byId('teacher-label').textContent='Xin chào, '+state.actor;
+      load();
+    }
     setInterval(() => {
       if (state.key && state.data && !state.pending && !state.mutating && !document.hidden) {
         load(byId('session').value, false, true);
       }
-    }, 60000);
+    }, 30000);
   </script>
 </body>
 </html>
