@@ -35,10 +35,11 @@ the other valid slot. Configuration reset erases only the configuration
 namespace.
 
 The portal is reachable only when configuration is missing or after a physical
-BOOT-button maintenance request. The SoftAP uses WPA2. An unconfigured device
-has a documented bootstrap password; a configured device derives its password
-from the device secret. HTTP status responses expose safe metadata only and
-never return passwords or secrets.
+BOOT-button maintenance request. The SoftAP uses WPA2. For teacher handoff,
+both first boot and maintenance use a local build-time AP password from a
+git-ignored header. Public development builds retain a documented fallback
+and are not deployment images. HTTP status responses expose safe metadata
+only and never return passwords or secrets.
 
 ## Consequences
 

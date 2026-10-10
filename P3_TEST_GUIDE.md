@@ -140,12 +140,13 @@ thanh thực tế là phép kiểm tra cuối cùng.
       sleep 3
     done
 
-Tăng volume từ từ. Không bắt đầu ở mức 30 vì loa nhỏ và nguồn USB có thể sụt áp.
+Mức âm lượng mặc định của bản bàn giao là 30/30, đã được kiểm thử với bộ loa
+đang dùng. Nếu đổi nguồn hoặc loa, nghe thử và kiểm tra có sụt áp/reset không.
 
 Test persistence:
 
-1. đặt volume 12 và bật audio;
-2. restart robot, vào lại portal, phải vẫn là 12/enabled;
+1. bật audio ở mức mặc định 30/30;
+2. restart robot, vào lại portal, audio vẫn enabled và phát ở mức 30/30;
 3. tắt audio, restart, điểm danh phải im lặng nhưng vẫn lưu/upload;
 4. bật lại trước full-flow test.
 

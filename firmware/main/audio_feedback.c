@@ -133,6 +133,9 @@ static void load_config(audio_config_record_t *record)
     if (read_error == ESP_OK && size == sizeof(stored) &&
         config_record_valid(&stored)) {
         *record = stored;
+        /* A teacher-facing build always uses the tested maximum. This also
+         * upgrades older NVS records that were saved at volume 18. */
+        record->volume = AUDIO_FEEDBACK_MAX_VOLUME;
         return;
     }
     if (read_error != ESP_ERR_NVS_NOT_FOUND) {

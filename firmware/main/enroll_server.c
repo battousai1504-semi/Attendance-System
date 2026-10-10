@@ -400,59 +400,69 @@ static const char *CONFIG_HTML =
     "<!DOCTYPE html><html lang='vi'><head><meta charset='UTF-8'>"
     "<meta name='viewport' content='width=device-width,initial-scale=1'>"
     "<title>Cấu hình Robot</title><style>"
-    "body{margin:0;font-family:sans-serif;background:#0f172a;color:#e2e8f0;padding:16px}"
-    "h1{color:#38bdf8;text-align:center}.card{background:#1e293b;border-radius:12px;"
-    "padding:20px;max-width:520px;margin:16px auto}label{display:block;margin:12px 0 4px;"
-    "color:#cbd5e1;font-weight:600}input{width:100%;box-sizing:border-box;padding:11px;"
-    "border:1px solid #475569;border-radius:8px;background:#0f172a;color:#e2e8f0}"
+    "body{margin:0;font:16px/1.55 system-ui,-apple-system,sans-serif;background:#f4f7fb;"
+    "color:#18263c;padding:20px}main{max-width:620px;margin:auto}"
+    "h1{font-size:28px;letter-spacing:-.03em;margin:8px 0 4px}h2{font-size:19px;margin:0 0 8px}"
+    ".intro{color:#66758a;margin:0 0 20px}.card{background:white;border:1px solid #dbe3ed;"
+    "border-radius:18px;padding:24px;margin:16px 0;box-shadow:0 8px 28px #12213f0c}"
+    "label{display:block;margin:14px 0 5px;font-weight:650}input{width:100%;box-sizing:border-box;"
+    "padding:12px;border:1px solid #bcc9da;border-radius:10px;background:#fff;color:#18263c;"
+    "font:inherit}input:focus{outline:3px solid #dce9ff;border-color:#265ad5}"
     "button,.link{display:block;width:100%;box-sizing:border-box;padding:12px;border:0;"
-    "border-radius:8px;margin-top:12px;color:#fff;text-align:center;text-decoration:none;"
-    "font-size:1em;cursor:pointer}.primary{background:#0284c7}.secondary{background:#475569}"
-    ".warning{background:#b45309}.danger{background:#991b1b}button:disabled{opacity:.55}"
-    "#status{white-space:pre-wrap;padding:12px;border-radius:8px;background:#0f172a;"
-    "margin-bottom:12px;color:#cbd5e1}.ok{color:#86efac}.err{color:#fca5a5}"
-    ".hint{color:#94a3b8;font-size:.9em;line-height:1.45}.audio-state{padding:10px;"
-    "background:#0f172a;border-radius:8px;color:#cbd5e1}.check{display:flex;gap:8px;"
-    "align-items:center}.check input{width:auto;margin:0}hr{border:0;border-top:1px solid #334155;"
-    "margin:22px 0}h2{color:#7dd3fc}</style></head><body>"
-    "<h1>⚙ Cấu hình thiết bị</h1><div class='card'>"
+    "border-radius:10px;margin-top:12px;color:#fff;text-align:center;text-decoration:none;"
+    "font:650 1em system-ui;cursor:pointer}.primary{background:#2556d8}.secondary{background:#edf2fa;"
+    "color:#223556}.warning{background:#a55310}.danger{background:#a12b32}"
+    "button:disabled{opacity:.55;cursor:not-allowed}#status{white-space:pre-wrap;padding:13px;"
+    "border-radius:10px;background:#eef4ff;margin:16px 0;color:#314a70}.ok{color:#08613c}"
+    ".err{color:#aa2730}.hint{color:#66758a;font-size:.9em;line-height:1.45}"
+    ".audio-state{padding:11px;background:#f1f5fa;border-radius:10px;color:#40536c}"
+    ".check{display:flex;gap:8px;align-items:center}.check input{width:auto;margin:0}"
+    "details{border-top:1px solid #dbe3ed;margin-top:20px;padding-top:16px}"
+    "summary{font-weight:700;cursor:pointer;color:#29487f}"
+    ".actions{display:grid;grid-template-columns:1fr 1fr;gap:10px}.actions button{margin-top:12px}"
+    "@media(max-width:560px){body{padding:12px}.card{padding:18px}.actions{grid-template-columns:1fr}}"
+    "</style></head><body><main><h1>Cấu hình robot</h1>"
+    "<p class='intro'>Chỉ cần đổi Wi-Fi khi chuyển mạng. Điểm danh hằng ngày trên sổ giáo viên.</p>"
+    "<div class='card'><h2>Kết nối Wi-Fi</h2>"
     "<div id='status'>Đang đọc trạng thái...</div>"
-    "<p class='hint'>Cấu hình mới chỉ được kích hoạt sau khi robot kết nối Wi-Fi, đồng bộ giờ "
-    "và Apps Script chấp nhận heartbeat xác thực. Secret không được trả lại trình duyệt.</p>"
     "<button class='secondary' type='button' onclick='scanWifi()'>Quét Wi-Fi 2,4 GHz</button>"
     "<form id='configForm'><label>Wi-Fi SSID</label>"
     "<input id='ssid' name='ssid' maxlength='32' list='networks' required><datalist id='networks'></datalist>"
-    "<label>Mật khẩu Wi-Fi</label><input name='wifi_password' type='password' maxlength='63' autocomplete='new-password'>"
-    "<label>Apps Script /exec URL</label><input name='gas_url' type='url' maxlength='383' required "
+    "<label>Mật khẩu Wi-Fi</label><input name='wifi_password' type='password' maxlength='63' autocomplete='new-password' placeholder='Để trống nếu không đổi mạng hoặc mật khẩu'>"
+    "<details id='advanced'><summary>Cài đặt kỹ thuật (lần đầu / khi đổi hệ thống)</summary>"
+    "<p class='hint'>Device secret là khóa riêng để robot xác thực với Sheets. Chỉ quản trị viên cần nhập khi cài lần đầu hoặc đổi khóa; robot không hiển thị khóa cũ.</p>"
+    "<label>Apps Script /exec URL</label><input name='gas_url' type='url' maxlength='383' "
     "placeholder='https://script.google.com/macros/s/.../exec'>"
-    "<label>Device ID</label><input id='deviceId' name='device_id' maxlength='31' required placeholder='robot-01'>"
-    "<label>Device secret</label><input name='device_secret' type='password' minlength='32' maxlength='127' "
-    "autocomplete='new-password' required>"
+    "<label>Device ID</label><input id='deviceId' name='device_id' maxlength='31' placeholder='robot-01'>"
+    "<label>Device secret mới</label><input name='device_secret' type='password' minlength='32' maxlength='127' "
+    "autocomplete='new-password' placeholder='Để trống để giữ khóa hiện tại'></details>"
     "<button id='saveBtn' class='primary' type='submit'>Kiểm tra và lưu cấu hình</button></form>"
     "<button id='restartBtn' class='primary' type='button' style='display:none' onclick='restartRobot()'>Khởi động lại để áp dụng</button>"
-    "<button id='rollbackBtn' class='warning' type='button' onclick='rollbackConfig()'>Rollback cấu hình trước</button>"
-    "<button class='danger' type='button' onclick='resetConfig()'>Factory reset cấu hình mạng/cloud</button>"
-    "<hr><h2>🔊 Âm thanh DFPlayer</h2>"
+    "<details><summary>Khôi phục cấu hình (quản trị viên)</summary>"
+    "<p class='hint'>Chỉ dùng khi cài đặt mới thất bại. Reset không xóa khuôn mặt hoặc lịch sử.</p>"
+    "<button id='rollbackBtn' class='warning' type='button' onclick='rollbackConfig()'>Quay lại cấu hình trước</button>"
+    "<button class='danger' type='button' onclick='resetConfig()'>Xóa cấu hình mạng/cloud</button></details></div>"
+    "<div class='card'><h2>Âm thanh</h2>"
     "<div id='audioState' class='audio-state'>Đang đọc trạng thái audio...</div>"
+    "<p class='hint'>Âm lượng mặc định 30/30 (mức đã kiểm thử).</p>"
     "<label class='check'><input id='audioEnabled' type='checkbox'> Bật phản hồi âm thanh</label>"
-    "<label>Âm lượng: <span id='audioVolumeValue'>18</span>/30</label>"
-    "<input id='audioVolume' type='range' min='0' max='30' value='18' "
-    "oninput='document.getElementById(\"audioVolumeValue\").textContent=this.value'>"
     "<button class='primary' type='button' onclick='saveAudio()'>Lưu cấu hình âm thanh</button>"
     "<button class='secondary' type='button' onclick='testAudio()'>Phát thử câu điểm danh thành công</button>"
-    "<label>Thử lời chào theo Student ID (1–50)</label>"
+    "<details><summary>Kiểm tra lời chào theo học sinh</summary>"
+    "<label>Student ID (1–50)</label>"
     "<input id='audioStudentId' type='number' min='1' max='50' placeholder='Ví dụ: 1'>"
     "<button class='secondary' type='button' onclick='testStudentAudio()'>Phát thử lời chào có tên</button>"
     "<p class='hint'>Nếu UART đã sẵn sàng nhưng module chưa phản hồi, kiểm tra thẻ microSD, "
-    "nguồn 5V, GND chung và hai dây TX/RX đấu chéo.</p>"
-    "<a class='link secondary' href='/'>Quay lại đăng ký khuôn mặt</a></div><script>"
+    "nguồn 5V, GND chung và hai dây TX/RX đấu chéo.</p></details>"
+    "<a class='link secondary' href='/'>Quay lại đăng ký khuôn mặt</a></div></main><script>"
     "const statusEl=document.getElementById('status');"
     "function show(message,ok){statusEl.textContent=message;statusEl.className=ok?'ok':'err'}"
     "async function jsonFetch(url,options){const response=await fetch(url,options);"
     "let value;try{value=await response.json()}catch(e){throw new Error('Phản hồi không hợp lệ')}"
     "if(!response.ok||!value.ok)throw new Error(value.error||'Yêu cầu thất bại');return value}"
     "async function refresh(){try{const value=await jsonFetch('/config/status');"
-    "show(value.configured?'Đã cấu hình · generation '+value.generation+' · slot '+value.active_slot:'Chưa có cấu hình runtime',true);"
+    "show(value.configured?'Đã kết nối cấu hình. Nếu chỉ đổi Wi-Fi, không cần nhập lại mục kỹ thuật.':'Cài đặt lần đầu: mở Cài đặt kỹ thuật và điền thông tin cloud.',true);"
+    "if(!value.configured)document.getElementById('advanced').open=true;"
     "if(value.ssid)document.getElementById('ssid').value=value.ssid;"
     "if(value.device_id)document.getElementById('deviceId').value=value.device_id;"
     "document.getElementById('rollbackBtn').disabled=!value.rollback_available;pollConfigJob()}catch(e){show(e.message,false)}}"
@@ -468,7 +478,10 @@ static const char *CONFIG_HTML =
     "async function pollConfigJob(){try{const value=await jsonFetch('/config/job');"
     "if(value.state==='running'){show('Đang thử Wi-Fi, NTP và Apps Script. Nếu AP đổi kênh, hãy chờ máy tự kết nối lại...',true);setTimeout(pollConfigJob,1500);return}"
     "document.getElementById('saveBtn').disabled=false;"
-    "if(value.state==='saved'){show('Đã lưu generation '+value.generation+' vào slot '+value.active_slot+'. Bấm khởi động lại để áp dụng.',true);document.getElementById('restartBtn').style.display='block'}"
+    "if(value.state==='saved'){show('Đã kiểm tra và lưu. Bấm khởi động lại để áp dụng.',true);"
+    "document.querySelector('[name=wifi_password]').value='';"
+    "document.querySelector('[name=device_secret]').value='';"
+    "document.getElementById('restartBtn').style.display='block'}"
     "else if(value.state==='failed'){show('Không lưu cấu hình: '+value.error,false)}"
     "}catch(e){show('AP đang đổi kênh hoặc tạm mất kết nối. Kết nối lại RobotSetup; trang sẽ tự kiểm tra tiếp...',true);setTimeout(pollConfigJob,2500)}}"
     "async function restartRobot(){show('Robot đang khởi động lại...',true);try{await jsonFetch('/config/restart',{method:'POST'})}catch(e){}}"
@@ -480,13 +493,11 @@ static const char *CONFIG_HTML =
     "show('Đã xóa cấu hình mạng/cloud. Danh tính vẫn được giữ. Robot đang khởi động lại...',true)}catch(e){show(e.message,false)}}"
     "async function refreshAudio(){try{const value=await jsonFetch('/audio/status');"
     "document.getElementById('audioEnabled').checked=value.enabled;"
-    "document.getElementById('audioVolume').value=value.volume;"
-    "document.getElementById('audioVolumeValue').textContent=value.volume;"
     "document.getElementById('audioState').textContent='UART '+(value.initialized?'sẵn sàng':'đang khởi tạo')"
     "+' · DFPlayer '+(value.module_responding?'đã phản hồi':'chưa phản hồi')"
     "+' · dropped '+value.dropped_events}catch(e){document.getElementById('audioState').textContent=e.message}}"
     "async function saveAudio(){try{const body=new URLSearchParams({enabled:document.getElementById('audioEnabled').checked?'1':'0',"
-    "volume:document.getElementById('audioVolume').value});await jsonFetch('/audio/config',{method:'POST',body});"
+    "volume:'30'});await jsonFetch('/audio/config',{method:'POST',body});"
     "show('Đã lưu cấu hình âm thanh.',true);await refreshAudio()}catch(e){show(e.message,false)}}"
     "async function testAudio(){try{await jsonFetch('/audio/test',{method:'POST',body:new URLSearchParams({track:'2'})});"
     "show('Đã gửi lệnh phát /mp3/0002.mp3.',true);setTimeout(refreshAudio,500)}catch(e){show(e.message,false)}}"
@@ -600,6 +611,30 @@ static esp_err_t handler_config_save(httpd_req_t *req)
         form_get_value(body, "device_secret", candidate.device_secret,
                        sizeof(candidate.device_secret));
     free(body);
+    if (parsed) {
+        device_config_values_t current = {0};
+        if (device_config_load(&current, NULL) == ESP_OK) {
+            /* Blank fields mean 'keep existing', never expose secrets in GET. */
+            if (candidate.wifi_password[0] == '\0' &&
+                strcmp(candidate.wifi_ssid, current.wifi_ssid) == 0) {
+                memcpy(candidate.wifi_password, current.wifi_password,
+                       sizeof(candidate.wifi_password));
+            }
+            if (candidate.gas_url[0] == '\0') {
+                memcpy(candidate.gas_url, current.gas_url,
+                       sizeof(candidate.gas_url));
+            }
+            if (candidate.device_id[0] == '\0') {
+                memcpy(candidate.device_id, current.device_id,
+                       sizeof(candidate.device_id));
+            }
+            if (candidate.device_secret[0] == '\0') {
+                memcpy(candidate.device_secret, current.device_secret,
+                       sizeof(candidate.device_secret));
+            }
+        }
+        memset(&current, 0, sizeof(current));
+    }
     if (!parsed || !device_config_values_valid(&candidate)) {
         memset(&candidate, 0, sizeof(candidate));
         return send_config_error(req, "invalid_configuration");

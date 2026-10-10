@@ -153,9 +153,11 @@ từ repository, sau đó nhận cấu hình tại `http://192.168.4.1/config`:
 - device ID;
 - device secret 32–127 ký tự đã provision trong Apps Script.
 
-Khi chưa có cấu hình, board mở AP `RobotSetup` với mật khẩu
-`RobotSetup-2026`. Khi đã có cấu hình, giữ BOOT 2,5 giây lúc ứng dụng đang chạy;
-mật khẩu maintenance AP là `Cfg-` cộng 12 ký tự đầu của device secret. Portal
+Board mở AP `RobotSetup` với mật khẩu bàn giao từ file local
+`firmware/main/setup_ap_password.h` ở cả lần đầu và khi vào maintenance.
+Khi đã có cấu hình, giữ BOOT 2,5 giây lúc ứng dụng đang chạy. Bản build công
+khai không có file local này vẫn dùng mật khẩu phát triển `RobotSetup-2026`;
+không dùng bản đó để bàn giao. Portal
 chỉ kích hoạt cấu hình mới sau khi test Wi-Fi, NTP và authenticated heartbeat.
 Các file local legacy vẫn bị Git ignore nhưng firmware không còn include chúng.
 
@@ -207,7 +209,7 @@ Sau khi flash xong phải thả BOOT. Maintenance của ứng dụng dùng quy t
 Sau `flash monitor`, chờ các marker:
 
 ```text
-Robot Điểm Danh 3.0.0-phase3-dev
+Robot Điểm Danh 3.1.0-phase3-ux-dev
 Camera OK (VGA, PSRAM)
 student_db ready
 Face models ready
@@ -219,7 +221,7 @@ lỗi camera, rút USB trước rồi kiểm tra lại cáp FPC và lẫy socket
 ### B. Provisioning và enrollment lần đầu
 
 Thiết bị chưa có runtime config tự mở AP `RobotSetup`; kết nối bằng mật khẩu
-bootstrap `RobotSetup-2026`. Nếu thiết bị báo Wi-Fi không có Internet, chọn giữ
+bàn giao trong file local `setup_ap_password.h`. Nếu thiết bị báo Wi-Fi không có Internet, chọn giữ
 kết nối. Cấu hình Wi-Fi/cloud tại:
 
 ```text
@@ -227,7 +229,7 @@ http://192.168.4.1/config
 ```
 
 Sau khi test và lưu thành công, robot restart. Nếu chưa có khuôn mặt, kết nối
-lại AP bằng mật khẩu `Cfg-` cộng 12 ký tự đầu của device secret rồi mở:
+lại AP bằng cùng mật khẩu bàn giao rồi mở:
 
 ```text
 http://192.168.4.1

@@ -433,21 +433,12 @@ void app_main(void)
     bool enrollment_complete = student_db_is_enrollment_complete();
     if (!config_ready || enrolled_faces == 0 || !enrollment_complete ||
         maintenance_requested || !identity_db_consistent) {
-        char setup_ap_password[20] = {0};
-        if (config_ready) {
-            snprintf(setup_ap_password, sizeof(setup_ap_password), "Cfg-%.12s",
-                     s_device_config.device_secret);
-        } else {
-            snprintf(setup_ap_password, sizeof(setup_ap_password), "%s",
-                     DEVICE_SETUP_AP_PASSWORD);
-        }
         ESP_LOGI(TAG, "Maintenance session active: faces=%d enrollment_complete=%s",
                  enrolled_faces, enrollment_complete ? "yes" : "no");
         ESP_LOGI(TAG, "Maintenance portal active at http://192.168.4.1 on SSID '%s'",
                  DEVICE_SETUP_AP_SSID);
         esp_err_t enroll_err = enroll_server_start(DEVICE_SETUP_AP_SSID,
-                                                    setup_ap_password);
-        memset(setup_ap_password, 0, sizeof(setup_ap_password));
+                                                    DEVICE_SETUP_AP_PASSWORD);
         if (enroll_err == ESP_OK) {
             while (!enroll_server_done()) {
                 vTaskDelay(pdMS_TO_TICKS(500));

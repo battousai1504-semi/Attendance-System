@@ -1,6 +1,7 @@
 # Local deployment secrets
 firmware/main/wifi_time_config.h
 firmware/main/cloud_config.h
+firmware/main/setup_ap_password.h
 *.env
 .env.*
 !.env.example

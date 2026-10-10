@@ -20,8 +20,14 @@
  * or when no valid runtime configuration exists. This password protects the
  * local AP from accidental association; device/cloud secrets are never served
  * back by the portal. */
-#define DEVICE_SETUP_AP_SSID     "RobotSetup"
+#define DEVICE_SETUP_AP_SSID "RobotSetup"
+/* Handoff password is provisioned by a local, git-ignored header. Public
+ * builds retain the development fallback and must be changed before use. */
+#if __has_include("setup_ap_password.h")
+#include "setup_ap_password.h"
+#else
 #define DEVICE_SETUP_AP_PASSWORD "RobotSetup-2026"
+#endif
 
 typedef struct {
     char wifi_ssid[DEVICE_CONFIG_WIFI_SSID_MAX + 1];
