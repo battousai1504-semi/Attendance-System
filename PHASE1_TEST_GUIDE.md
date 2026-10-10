@@ -4,6 +4,15 @@ This guide verifies the ESP32-S3 camera, enrollment, recognition, local
 attendance storage, duplicate cooldown, Wi-Fi/NTP, Google Sheets upload, and
 offline retry behavior.
 
+This document preserves the Phase 1 release contract. The current source uses
+API v2 and Phase 3 firmware; use `FULL_SYSTEM_ACCEPTANCE_TEST.md` for the
+current end-to-end test instead of following the historical flash commands
+below. Run repository commands from a directory inside the clone.
+
+Target hardware: ESP32-S3-WROOM N16R8 camera board with its camera already
+connected through the onboard FPC socket. Do not wire camera signals to the
+side headers. See `HARDWARE_AND_UBUNTU_GUIDE.md` before powering the board.
+
 ## 1. Prepare the Google Apps Script backend
 
 1. Open the target Google Sheet and its Apps Script project.
@@ -13,14 +22,13 @@ offline retry behavior.
    - `SPREADSHEET_ID`: the target spreadsheet ID.
    - `API_TOKEN`: exactly the same token used by `firmware/main/cloud_config.h`.
 4. Run the Apps Script function `setup()` once and grant permissions.
-5. Deploy as **Web app**:
-   - Execute as: **Me**.
-   - Who has access: a setting that permits the ESP32 to call the URL.
+5. Deploy as a Web app, execute as the owner, and grant access to **Anyone**.
 6. After editing the script, update the existing deployment to a new version.
-7. Open the `/exec` deployment URL in a browser. Expected response:
+7. Open the `/exec` URL and require `api_version` to equal `phase1-v2`, with
+   both `configured` and `sheet_ready` equal to `true`. Expected response:
 
 ```json
-{"ok":true,"service":"robot-attendance"}
+{"ok":true,"service":"robot-attendance","api_version":"phase1-v2","configured":true,"sheet_ready":true}
 ```
 
 ## 2. Verify local configuration
@@ -31,31 +39,37 @@ Check these local-only files without publishing their contents:
 - `firmware/main/cloud_config.h`: `/exec` deployment URL, matching API token,
   and device ID.
 
-## 3. Build, flash, and monitor
+## 3. Build, flash, and monitor on Ubuntu
 
-Open PowerShell and run:
+Follow `HARDWARE_AND_UBUNTU_GUIDE.md` once to install ESP-IDF 6.0.2 and grant
+serial-port access. Connect only the board port marked `UART`/`USB-UART` for
+the first test. Then open an ESP-IDF shell and run:
 
-```powershell
-. 'C:\Espressif\tools\Microsoft.v6.0.2.PowerShell_profile.ps1'
-cd 'C:\Users\ACER\.gemini\antigravity\scratch\robot-attendance\firmware'
+```bash
+eim shell v6.0.2
+cd "$(git rev-parse --show-toplevel)/firmware"
 idf.py build
-[System.IO.Ports.SerialPort]::GetPortNames()
-idf.py -p COMx flash monitor
+ls -l /dev/ttyACM* /dev/ttyUSB* 2>/dev/null
+idf.py -p /dev/ttyACM0 flash monitor
 ```
 
-Replace `COMx` with the detected port, for example `COM7`. Exit the monitor
-with `Ctrl+]`.
+Replace `/dev/ttyACM0` with the detected port. Exit the monitor with `Ctrl+]`.
 
 Do not run `erase-flash` during an ordinary update. A normal flash preserves
 enrolled faces, attendance history, and pending uploads.
 
+When replacing the seller's demo firmware with this project for the first
+time, run `idf.py -p /dev/ttyACM0 erase-flash` once immediately before
+`flash monitor` so that the old partition layout cannot be mistaken for this
+project's data.
+
 Expected boot markers:
 
 ```text
-Robot Điểm Danh 1.2-phase1
+Robot Điểm Danh 1.2.1-phase1
 Camera OK (VGA, PSRAM)
 student_db ready
-Face engine initialized
+Face models ready
 Attendance storage ready: /spiffs/attendance.csv
 Verified TLS CA store ready
 Durable uploader ready
@@ -69,7 +83,7 @@ the middle of registering a class does not lose the session. A firmware update
 from an older version may open enrollment once so the teacher can review the
 existing list and press **Kết thúc buổi đăng ký**.
 
-Only use `idf.py -p COMx erase-flash` when a clean factory reset is truly
+Only use `idf.py -p /dev/ttyACM0 erase-flash` (with the correct port) when a clean factory reset is truly
 required. It permanently deletes enrolled faces, attendance history, and the
 upload outbox.
 
@@ -88,6 +102,13 @@ For a clean device:
 9. Before finishing, reboot once and verify the AP reopens with the previously
    saved list. Then press **Kết thúc buổi đăng ký** only after the class is
    complete.
+10. After completion, reboot normally and verify recognition mode starts.
+11. While recognition mode is already running, hold BOOT for at least 2.5
+    seconds. Verify the firmware stores a one-shot request, restarts itself and
+    opens maintenance enrollment without erasing identities. Do not press
+    RESET while BOOT is held; GPIO0 is the ROM download-mode strap.
+12. Confirm that the serial log prints the enrollment SSID but never prints its
+    password.
 
 Pass criteria:
 
@@ -101,6 +122,8 @@ Negative checks:
 - No face: web page reports that no face was detected.
 - Multiple faces: web page asks for only one face.
 - Empty or overlong name: web page rejects the data.
+- A face/student count mismatch: the page displays a warning and refuses Done.
+- Identity reset: only succeeds after entering the exact confirmation `RESET`.
 
 ## 5. Test Wi-Fi and NTP
 
@@ -134,6 +157,8 @@ ATTENDANCE SAVED: YYYY-MM-DD HH:MM:SS | ID=... | FACE | event=...
 ```
 
 The status LED blinks twice quickly for a new attendance record.
+This is the plain onboard LED marked `IO2`; GPIO48 is the board's WS2812 RGB
+LED and is intentionally not used by Phase 1 firmware.
 
 ## 7. Test duplicate cooldown
 
@@ -187,9 +212,13 @@ Pass criteria:
 
 ## Phase 1 acceptance checklist
 
-- [ ] Firmware `1.2-phase1` boots without panic or restart loop.
+- [ ] Firmware `1.2.1-phase1` builds on Ubuntu and boots without panic or restart loop.
+- [ ] Camera needs no jumper wiring; its FPC cable is seated and locked with power removed.
+- [ ] Flash and monitor use the board's USB-UART port and the correct `/dev/tty*` device.
 - [ ] Camera and PSRAM initialize.
 - [ ] Batch enrollment shows progress, supports undo, and resumes after reboot.
+- [ ] BOOT-button maintenance enrollment works and no AP password is logged.
+- [ ] Identity mismatch is detected and cannot enter recognition mode.
 - [ ] Enrollment rejects invalid scenes and saves a valid student.
 - [ ] Enrolled face and student metadata survive a normal reboot.
 - [ ] Wi-Fi reconnects and NTP provides correct Vietnam time.
@@ -198,3 +227,5 @@ Pass criteria:
 - [ ] HTTPS upload succeeds without TLS `-0x2700`.
 - [ ] Sheet data matches the device log.
 - [ ] Offline events survive reboot and upload later without duplicate rows.
+- [ ] Power loss between recognition, local CSV commit, and upload retry loses no cloud event.
+- [ ] A non-blank damaged SPIFFS partition is not automatically formatted.

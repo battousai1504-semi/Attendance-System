@@ -8,13 +8,17 @@ Sketch Arduino IDE: `dfplayer_test.ino`
 |---|---|
 | VCC | 5V / VBUS |
 | GND | GND |
-| TX | GPIO1 |
-| RX | GPIO2 through about 1K resistor |
+| TX | GPIO42 |
+| RX | GPIO41 through about 1K resistor |
 | SPK1 | speaker wire 1 |
 | SPK2 | speaker wire 2 |
 
 The speaker must connect to `SPK1` and `SPK2`. Do not connect this speaker
 between `SPK1` and GND because the DFPlayer speaker output is bridged.
+
+These are the same pins used by the production ESP-IDF firmware. Flashing this
+standalone Arduino sketch replaces that firmware until it is flashed back; use
+the production maintenance portal for the final end-to-end acceptance test.
 
 Use a FAT32 microSD card. Put a test file at:
 

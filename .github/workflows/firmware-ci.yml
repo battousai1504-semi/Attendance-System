@@ -1,0 +1,55 @@
+name: Firmware CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: firmware-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  host-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Run host-side persistence tests
+        run: bash tests/host/run_tests.sh
+
+      - name: Run Google Apps Script contract tests
+        run: |
+          node tests/apps_script/test_code.js
+          node tests/apps_script/test_dashboard_html.js
+
+  build:
+    runs-on: ubuntu-latest
+    container: espressif/idf:v6.0.2
+    defaults:
+      run:
+        working-directory: firmware
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Build ESP32-S3 firmware
+        run: idf.py build
+
+      - name: Package OTA release artifact
+        run: |
+          firmware_version="$(python3 -c 'import json; print(json.load(open("build/project_description.json"))["project_version"])')"
+          ../tools/package_ota.sh "$firmware_version" \
+            https://example.invalid/robot_attendance.bin \
+            build/robot_attendance.bin build/ota-manifest.template.json
+
+      - name: Upload CI development artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: robot-attendance-ci-${{ github.sha }}
+          path: |
+            firmware/build/robot_attendance.bin
+            firmware/build/robot_attendance.sha256
+            firmware/build/ota-manifest.template.json
+          if-no-files-found: error

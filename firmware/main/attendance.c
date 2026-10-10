@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 
 #include "esp_log.h"
 #include "esp_random.h"
@@ -8,9 +9,17 @@
 #include "attendance.h"
 #include "manual_clock.h"
 
+#ifndef ATTENDANCE_FILE
 #define ATTENDANCE_FILE "/spiffs/attendance.csv"
+#endif
+#ifndef ATTENDANCE_PREVIOUS_FILE
+#define ATTENDANCE_PREVIOUS_FILE "/spiffs/attendance.previous.csv"
+#endif
 #define ATTENDANCE_COOLDOWN_SECONDS 60
 #define ATTENDANCE_TRACKED_IDS 256
+#ifndef ATTENDANCE_MAX_FILE_BYTES
+#define ATTENDANCE_MAX_FILE_BYTES (256 * 1024)
+#endif
 
 static const char *TAG = "attendance";
 static time_t s_last_record_time[ATTENDANCE_TRACKED_IDS];
@@ -67,6 +76,22 @@ static bool parse_record_line(const char *line, attendance_entry_t *entry)
     return parse_timestamp(entry->timestamp, &entry->epoch);
 }
 
+static void restore_cooldowns_from_file(const char *path)
+{
+    FILE *file = fopen(path, "r");
+    if (file == NULL) return;
+    char line[160];
+    attendance_entry_t entry;
+    while (fgets(line, sizeof(line), file) != NULL) {
+        memset(&entry, 0, sizeof(entry));
+        if (parse_record_line(line, &entry) &&
+            entry.epoch > s_last_record_time[entry.person_id]) {
+            s_last_record_time[entry.person_id] = entry.epoch;
+        }
+    }
+    fclose(file);
+}
+
 esp_err_t attendance_init(void)
 {
     memset(s_last_record_time, 0, sizeof(s_last_record_time));
@@ -77,25 +102,14 @@ esp_err_t attendance_init(void)
     }
     fclose(file);
 
-    file = fopen(ATTENDANCE_FILE, "r");
-    if (file != NULL) {
-        char line[160];
-        attendance_entry_t entry;
-        while (fgets(line, sizeof(line), file) != NULL) {
-            memset(&entry, 0, sizeof(entry));
-            if (parse_record_line(line, &entry) &&
-                entry.epoch > s_last_record_time[entry.person_id]) {
-                s_last_record_time[entry.person_id] = entry.epoch;
-            }
-        }
-        fclose(file);
-    }
+    restore_cooldowns_from_file(ATTENDANCE_PREVIOUS_FILE);
+    restore_cooldowns_from_file(ATTENDANCE_FILE);
     ESP_LOGI(TAG, "Attendance storage ready: %s", ATTENDANCE_FILE);
     return ESP_OK;
 }
 
-attendance_result_t attendance_record(uint16_t person_id, const char *method,
-                                      attendance_entry_t *entry_out)
+attendance_result_t attendance_prepare(uint16_t person_id, const char *method,
+                                       attendance_entry_t *entry_out)
 {
     if (person_id == 0 || person_id >= ATTENDANCE_TRACKED_IDS ||
         method == NULL || method[0] == '\0' || entry_out == NULL) {
@@ -121,24 +135,75 @@ attendance_result_t attendance_record(uint16_t person_id, const char *method,
     snprintf(entry.event_id, sizeof(entry.event_id), "%lld-%u-%08lx",
              (long long)now, (unsigned)person_id, (unsigned long)esp_random());
 
-    FILE *file = fopen(ATTENDANCE_FILE, "a");
-    if (file == NULL) {
-        ESP_LOGE(TAG, "Cannot append attendance record");
-        return ATTENDANCE_ERROR;
+    *entry_out = entry;
+    return ATTENDANCE_RECORDED;
+}
+
+static esp_err_t rotate_history_if_needed(void)
+{
+    FILE *file = fopen(ATTENDANCE_FILE, "r");
+    if (file == NULL) return ESP_OK;
+    esp_err_t result = ESP_OK;
+    if (fseek(file, 0, SEEK_END) != 0) {
+        result = ESP_FAIL;
+    } else {
+        const long size = ftell(file);
+        if (size < 0) result = ESP_FAIL;
+        if (size >= ATTENDANCE_MAX_FILE_BYTES) {
+            fclose(file);
+            file = NULL;
+            remove(ATTENDANCE_PREVIOUS_FILE);
+            if (rename(ATTENDANCE_FILE, ATTENDANCE_PREVIOUS_FILE) != 0) {
+                ESP_LOGE(TAG, "Cannot rotate attendance history");
+                return ESP_FAIL;
+            }
+            ESP_LOGW(TAG, "Attendance history rotated at %ld bytes", size);
+        }
     }
-    const int written = fprintf(file, "%s,%s,%u,%s\n",
-                                entry.event_id, entry.timestamp, person_id, entry.method);
-    fclose(file);
-    if (written < 0) {
-        ESP_LOGE(TAG, "Attendance write failed");
-        return ATTENDANCE_ERROR;
+    if (file != NULL) fclose(file);
+    return result;
+}
+
+esp_err_t attendance_commit(const attendance_entry_t *entry,
+                            bool durable_copy_exists)
+{
+    if (entry == NULL || entry->event_id[0] == '\0' || entry->person_id == 0 ||
+        entry->person_id >= ATTENDANCE_TRACKED_IDS) {
+        return ESP_ERR_INVALID_ARG;
     }
 
-    s_last_record_time[person_id] = now;
-    *entry_out = entry;
+    esp_err_t local_result = rotate_history_if_needed();
+    FILE *file = local_result == ESP_OK ? fopen(ATTENDANCE_FILE, "a") : NULL;
+    if (file == NULL) {
+        ESP_LOGE(TAG, "Cannot append attendance record");
+        local_result = ESP_FAIL;
+    } else {
+        const int written = fprintf(file, "%s,%s,%u,%s\n",
+                                    entry->event_id, entry->timestamp,
+                                    entry->person_id, entry->method);
+        bool sync_failed = written < 0;
+        if (!sync_failed && (fflush(file) != 0 || fsync(fileno(file)) != 0)) {
+            sync_failed = true;
+        }
+        if (fclose(file) != 0) sync_failed = true;
+        if (sync_failed) {
+            ESP_LOGE(TAG, "Attendance history sync failed");
+            local_result = ESP_FAIL;
+        }
+    }
+
+    if (local_result != ESP_OK && !durable_copy_exists) {
+        return local_result;
+    }
+
+    s_last_record_time[entry->person_id] = entry->epoch;
     ESP_LOGI(TAG, "ATTENDANCE SAVED: %s | ID=%u | %s | event=%s",
-             entry.timestamp, person_id, entry.method, entry.event_id);
-    return ATTENDANCE_RECORDED;
+             entry->timestamp, entry->person_id, entry->method, entry->event_id);
+    if (local_result != ESP_OK) {
+        ESP_LOGW(TAG, "Local CSV unavailable; durable outbox retained event=%s",
+                 entry->event_id);
+    }
+    return ESP_OK;
 }
 
 esp_err_t attendance_clear(void)
@@ -149,6 +214,7 @@ esp_err_t attendance_clear(void)
         return ESP_FAIL;
     }
     fclose(file);
+    remove(ATTENDANCE_PREVIOUS_FILE);
     memset(s_last_record_time, 0, sizeof(s_last_record_time));
     ESP_LOGI(TAG, "Attendance history cleared");
     return ESP_OK;

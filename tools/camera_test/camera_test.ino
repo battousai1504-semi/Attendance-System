@@ -8,7 +8,8 @@
 #include <WiFi.h>
 
 const char* AP_SSID = "RobotCamera";
-const char* AP_PASS = "12345678";
+// Standalone diagnostic AP only; change before using outside a private bench.
+const char* AP_PASS = "RobotCamera-Test-2026";
 
 // ═══ Hãy thử đổi số này (1, 2, 3, 4) cho đến khi camera chạy! ═══
 #define PIN_CONFIG 2
@@ -227,7 +228,7 @@ void setup() {
   delay(500);
 
   Serial.println("\n=== Hotspot OK! ===");
-  Serial.printf("Ket noi WiFi: \"%s\"  pass: \"%s\"\n", AP_SSID, AP_PASS);
+  Serial.printf("Ket noi WiFi: \"%s\"\n", AP_SSID);
   Serial.printf("Mo trinh duyet: http://%s\n", WiFi.softAPIP().toString().c_str());
   Serial.println("===================");
 

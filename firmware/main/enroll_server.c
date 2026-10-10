@@ -3,23 +3,58 @@
 #include <stdlib.h>
 #include <stdbool.h>
 
+#include "esp_event.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
 #include "esp_netif.h"
+#include "esp_netif_sntp.h"
 #include "esp_wifi.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/event_groups.h"
+#include "freertos/task.h"
 
+#include "audio_feedback.h"
+#include "device_config.h"
 #include "enroll_server.h"
 #include "face_engine.h"
+#include "http_upload.h"
 #include "student_db.h"
 
 #define TAG "enroll_server"
 #define ENROLLMENT_CAPACITY STUDENT_MAX_COUNT
+#define PROVISION_GOT_IP_BIT       BIT0
+#define PROVISION_DISCONNECTED_BIT BIT1
+#define PROVISION_WIFI_TIMEOUT_MS  20000
+#define PROVISION_NTP_TIMEOUT_MS   20000
+#define WIFI_SCAN_LIMIT            16
+#define CONFIG_JOB_TASK_STACK      8192
+#define CONFIG_JOB_TASK_PRIORITY   4
 
 static httpd_handle_t s_server;
 static esp_netif_t *s_ap_netif;
-static bool s_done_requested;
+static esp_netif_t *s_sta_netif;
+static volatile bool s_done_requested;
+static volatile bool s_restart_requested;
+static volatile bool s_candidate_connecting;
 static bool s_wifi_initialized;
 static bool s_wifi_started;
+static EventGroupHandle_t s_provisioning_events;
+static esp_event_handler_instance_t s_wifi_event_instance;
+static esp_event_handler_instance_t s_ip_event_instance;
+static TaskHandle_t s_restart_delay_task;
+
+typedef enum {
+    CONFIG_JOB_IDLE,
+    CONFIG_JOB_RUNNING,
+    CONFIG_JOB_SAVED,
+    CONFIG_JOB_FAILED,
+} config_job_state_t;
+
+static volatile config_job_state_t s_config_job_state;
+static device_config_values_t s_config_job_candidate;
+static char s_config_job_error[40];
+static uint32_t s_config_job_generation;
+static uint8_t s_config_job_slot = DEVICE_CONFIG_SLOT_NONE;
 
 static int hex_value(char value)
 {
@@ -80,6 +115,179 @@ static bool valid_student_field(const char *value, bool required)
     return true;
 }
 
+static esp_err_t read_request_body(httpd_req_t *req, char **body,
+                                   size_t maximum_size)
+{
+    if (req == NULL || body == NULL || req->content_len <= 0 ||
+        (size_t)req->content_len > maximum_size) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    char *buffer = calloc((size_t)req->content_len + 1, 1);
+    if (buffer == NULL) return ESP_ERR_NO_MEM;
+    size_t total = 0;
+    while (total < (size_t)req->content_len) {
+        const int received = httpd_req_recv(req, buffer + total,
+                                            req->content_len - total);
+        if (received <= 0) {
+            free(buffer);
+            return ESP_FAIL;
+        }
+        total += (size_t)received;
+    }
+    buffer[total] = '\0';
+    *body = buffer;
+    return ESP_OK;
+}
+
+static void provisioning_event_handler(void *argument,
+                                       esp_event_base_t event_base,
+                                       int32_t event_id,
+                                       void *event_data)
+{
+    (void)argument;
+    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_AP_STACONNECTED) {
+        const wifi_event_ap_staconnected_t *event = event_data;
+        ESP_LOGI(TAG, "Maintenance client connected (AID=%u)",
+                 event != NULL ? (unsigned)event->aid : 0U);
+    } else if (event_base == WIFI_EVENT &&
+               event_id == WIFI_EVENT_AP_STADISCONNECTED) {
+        const wifi_event_ap_stadisconnected_t *event = event_data;
+        ESP_LOGW(TAG, "Maintenance client disconnected (AID=%u reason=%u)",
+                 event != NULL ? (unsigned)event->aid : 0U,
+                 event != NULL ? (unsigned)event->reason : 0U);
+    }
+    if (!s_candidate_connecting || s_provisioning_events == NULL) return;
+    if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+        xEventGroupSetBits(s_provisioning_events, PROVISION_GOT_IP_BIT);
+    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+        const wifi_event_sta_disconnected_t *event = event_data;
+        ESP_LOGW(TAG, "Candidate Wi-Fi disconnected (reason=%u rssi=%d)",
+                 event != NULL ? (unsigned)event->reason : 0U,
+                 event != NULL ? (int)event->rssi : -127);
+        xEventGroupSetBits(s_provisioning_events, PROVISION_DISCONNECTED_BIT);
+    }
+}
+
+typedef enum {
+    PROVISION_TEST_OK,
+    PROVISION_TEST_WIFI_FAILED,
+    PROVISION_TEST_TIME_FAILED,
+    PROVISION_TEST_CLOUD_FAILED,
+} provision_test_result_t;
+
+static provision_test_result_t test_candidate_config(
+    const device_config_values_t *candidate)
+{
+    wifi_config_t station = {0};
+    strlcpy((char *)station.sta.ssid, candidate->wifi_ssid,
+            sizeof(station.sta.ssid));
+    strlcpy((char *)station.sta.password, candidate->wifi_password,
+            sizeof(station.sta.password));
+    station.sta.threshold.authmode = candidate->wifi_password[0] == '\0' ?
+                                     WIFI_AUTH_OPEN : WIFI_AUTH_WPA2_PSK;
+    station.sta.pmf_cfg.capable = true;
+    station.sta.pmf_cfg.required = false;
+
+    s_candidate_connecting = false;
+    (void)esp_wifi_disconnect();
+    if (esp_wifi_set_config(WIFI_IF_STA, &station) != ESP_OK) {
+        return PROVISION_TEST_WIFI_FAILED;
+    }
+    xEventGroupClearBits(s_provisioning_events,
+                         PROVISION_GOT_IP_BIT | PROVISION_DISCONNECTED_BIT);
+    s_candidate_connecting = true;
+    if (esp_wifi_connect() != ESP_OK) {
+        s_candidate_connecting = false;
+        return PROVISION_TEST_WIFI_FAILED;
+    }
+    const EventBits_t bits = xEventGroupWaitBits(
+        s_provisioning_events,
+        PROVISION_GOT_IP_BIT | PROVISION_DISCONNECTED_BIT,
+        pdTRUE, pdFALSE, pdMS_TO_TICKS(PROVISION_WIFI_TIMEOUT_MS));
+    if ((bits & PROVISION_GOT_IP_BIT) == 0) {
+        s_candidate_connecting = false;
+        (void)esp_wifi_disconnect();
+        return PROVISION_TEST_WIFI_FAILED;
+    }
+
+    esp_sntp_config_t sntp_config = ESP_NETIF_SNTP_DEFAULT_CONFIG("time.google.com");
+    bool sntp_started = esp_netif_sntp_init(&sntp_config) == ESP_OK;
+    if (!sntp_started ||
+        esp_netif_sntp_sync_wait(pdMS_TO_TICKS(PROVISION_NTP_TIMEOUT_MS)) != ESP_OK) {
+        if (sntp_started) esp_netif_sntp_deinit();
+        s_candidate_connecting = false;
+        (void)esp_wifi_disconnect();
+        return PROVISION_TEST_TIME_FAILED;
+    }
+
+    wifi_ap_record_t access_point = {0};
+    int rssi = -127;
+    if (esp_wifi_sta_get_ap_info(&access_point) == ESP_OK) rssi = access_point.rssi;
+    const esp_err_t cloud_error = http_upload_test_config(
+        candidate->gas_url, candidate->device_secret, candidate->device_id, rssi);
+    esp_netif_sntp_deinit();
+    s_candidate_connecting = false;
+    (void)esp_wifi_disconnect();
+    return cloud_error == ESP_OK ? PROVISION_TEST_OK : PROVISION_TEST_CLOUD_FAILED;
+}
+
+static void config_job_task(void *argument)
+{
+    (void)argument;
+    /* Let the HTTP task finish sending the accepted response before AP+STA
+     * channel changes can interrupt the browser connection. */
+    vTaskDelay(pdMS_TO_TICKS(500));
+    const provision_test_result_t test =
+        test_candidate_config(&s_config_job_candidate);
+    if (test != PROVISION_TEST_OK) {
+        const char *error = test == PROVISION_TEST_WIFI_FAILED ?
+            "wifi_connection_failed" : test == PROVISION_TEST_TIME_FAILED ?
+            "ntp_sync_failed" : "cloud_authentication_failed";
+        snprintf(s_config_job_error, sizeof(s_config_job_error), "%s", error);
+        memset(&s_config_job_candidate, 0, sizeof(s_config_job_candidate));
+        s_config_job_state = CONFIG_JOB_FAILED;
+        vTaskDelete(NULL);
+        return;
+    }
+
+    device_config_status_t status = {0};
+    const esp_err_t save_error =
+        device_config_save(&s_config_job_candidate, &status);
+    memset(&s_config_job_candidate, 0, sizeof(s_config_job_candidate));
+    if (save_error != ESP_OK) {
+        snprintf(s_config_job_error, sizeof(s_config_job_error),
+                 "config_save_failed");
+        s_config_job_state = CONFIG_JOB_FAILED;
+        vTaskDelete(NULL);
+        return;
+    }
+    s_config_job_generation = status.generation;
+    s_config_job_slot = status.active_slot;
+    s_config_job_error[0] = '\0';
+    s_config_job_state = CONFIG_JOB_SAVED;
+    vTaskDelete(NULL);
+}
+
+static void delayed_restart_request_task(void *argument)
+{
+    (void)argument;
+    vTaskDelay(pdMS_TO_TICKS(1500));
+    s_restart_requested = true;
+    s_done_requested = true;
+    s_restart_delay_task = NULL;
+    vTaskDelete(NULL);
+}
+
+static esp_err_t schedule_restart(void)
+{
+    if (s_restart_delay_task != NULL) return ESP_OK;
+    if (xTaskCreate(delayed_restart_request_task, "portal_restart", 2048, NULL,
+                    3, &s_restart_delay_task) != pdPASS) {
+        return ESP_ERR_NO_MEM;
+    }
+    return ESP_OK;
+}
+
 static esp_err_t send_json_string(httpd_req_t *req, const char *value)
 {
     esp_err_t err = httpd_resp_send_chunk(req, "\"", 1);
@@ -113,6 +321,9 @@ static const char *INDEX_HTML =
     "button{width:100%;padding:12px;border:0;border-radius:8px;font-size:1em;"
     "cursor:pointer;margin-bottom:8px;color:#fff}button:disabled{opacity:.55}"
     ".enroll{background:#0ea5e9}.undo{background:#b45309}.done{background:#16a34a}"
+    ".reset{background:#991b1b;margin-top:18px}"
+    ".config{display:block;text-align:center;background:#475569;color:#fff;text-decoration:none;"
+    "padding:12px;border-radius:8px;margin-bottom:16px}"
     "#progress{padding:10px;background:#0f172a;border-radius:8px;margin-bottom:14px}"
     "#students{max-height:190px;overflow:auto;padding-left:28px;color:#cbd5e1}"
     "#students li{padding:3px 0}"
@@ -121,8 +332,12 @@ static const char *INDEX_HTML =
     ".err{background:#450a0a;color:#fca5a5}"
     "</style></head><body>"
     "<h1>🎓 Đăng ký học sinh</h1><div class='card'>"
+    "<a class='config' href='/config'>⚙ Cấu hình Wi-Fi và cloud</a>"
     "<div id='progress'>Đã đăng ký: <b id='count'>0</b> / <span id='capacity'>50</span></div>"
+    "<div id='dbwarning' class='err' style='display:none;margin-bottom:12px;padding:10px'></div>"
     "<ol id='students'></ol>"
+    "<button class='config' type='button' onclick='downloadVoiceRoster()'>⬇ Tải danh sách ID làm lời chào</button>"
+    "<p style='color:#94a3b8'>File này có tên học sinh; giữ riêng tư và không đưa lên Git.</p>"
     "<label>Họ tên học sinh</label>"
     "<input id='name' type='text' placeholder='Nguyễn Văn A' autocomplete='off'>"
     "<label>Lớp</label>"
@@ -130,6 +345,7 @@ static const char *INDEX_HTML =
     "<button id='enrollBtn' class='enroll' onclick='doEnroll()'>📸 Chụp & Đăng ký</button>"
     "<button class='undo' onclick='undoLast()'>↩ Hoàn tác em cuối</button>"
     "<button class='done' onclick='doneSession()'>✅ Kết thúc buổi đăng ký</button>"
+    "<button class='reset' onclick='resetIdentities()'>🗑 Xóa toàn bộ danh tính</button>"
     "<div id='status'></div></div>"
     "<script>"
     "function showStatus(msg,ok){var el=document.getElementById('status');"
@@ -137,9 +353,19 @@ static const char *INDEX_HTML =
     "async function refreshStudents(){try{var j=await (await fetch('/students')).json();"
     "document.getElementById('count').textContent=j.count;"
     "document.getElementById('capacity').textContent=j.capacity;"
+    "var warning=document.getElementById('dbwarning');"
+    "if(!j.consistent){warning.textContent='Dữ liệu không đồng bộ: '+j.face_count+' khuôn mặt, '+j.count+' học sinh. Hãy hoàn tác hoặc xóa toàn bộ danh tính.';warning.style.display='block'}"
+    "else warning.style.display='none';"
     "var list=document.getElementById('students');list.textContent='';"
     "j.students.forEach(function(s){var li=document.createElement('li');"
     "li.textContent='ID '+s.id+': '+s.name+(s.class?' — '+s.class:'');list.appendChild(li)})}catch(e){}}"
+    "async function downloadVoiceRoster(){try{var r=await fetch('/students');var j=await r.json();"
+    "if(!r.ok||!j.ok||!j.consistent||!j.students.length)throw new Error('Danh sách chưa sẵn sàng');"
+    "var url=URL.createObjectURL(new Blob([JSON.stringify(j,null,2)],{type:'application/json'}));"
+    "var a=document.createElement('a');a.href=url;a.download='student-voice-roster.json';a.click();"
+    "setTimeout(function(){URL.revokeObjectURL(url)},1000);"
+    "showStatus('Đã tải danh sách ID để chuẩn bị lời chào trên thẻ SD.',true)"
+    "}catch(e){showStatus('Không tải được danh sách ID: '+e.message,false)}}"
     "async function doEnroll(){"
     "  var nameInput=document.getElementById('name');var name=nameInput.value.trim();"
     "  var cls=document.getElementById('cls').value.trim();"
@@ -164,8 +390,124 @@ static const char *INDEX_HTML =
     "  try{var j=await (await fetch('/done',{method:'POST'})).json();"
     "  if(j.ok)showStatus('🚀 Robot đang chuyển sang chế độ điểm danh...',true);"
     "  else showStatus('❌ Lỗi: '+j.error,false);}catch(e){showStatus('❌ Lỗi kết nối với robot',false);}}"
+    "async function resetIdentities(){var code=prompt('Thao tác này xóa toàn bộ khuôn mặt và danh sách học sinh. Nhập RESET để xác nhận:');"
+    "  if(code!=='RESET')return;try{var j=await (await fetch('/reset-identities',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'confirm=RESET'})).json();"
+    "  showStatus(j.ok?'Đã xóa toàn bộ danh tính':'❌ Lỗi: '+j.error,j.ok);await refreshStudents();}catch(e){showStatus('❌ Lỗi kết nối với robot',false);}}"
     "refreshStudents();document.getElementById('name').focus();"
     "</script></body></html>";
+
+static const char *CONFIG_HTML =
+    "<!DOCTYPE html><html lang='vi'><head><meta charset='UTF-8'>"
+    "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+    "<title>Cấu hình Robot</title><style>"
+    "body{margin:0;font:16px/1.55 system-ui,-apple-system,sans-serif;background:#f4f7fb;"
+    "color:#18263c;padding:20px}main{max-width:620px;margin:auto}"
+    "h1{font-size:28px;letter-spacing:-.03em;margin:8px 0 4px}h2{font-size:19px;margin:0 0 8px}"
+    ".intro{color:#66758a;margin:0 0 20px}.card{background:white;border:1px solid #dbe3ed;"
+    "border-radius:18px;padding:24px;margin:16px 0;box-shadow:0 8px 28px #12213f0c}"
+    "label{display:block;margin:14px 0 5px;font-weight:650}input{width:100%;box-sizing:border-box;"
+    "padding:12px;border:1px solid #bcc9da;border-radius:10px;background:#fff;color:#18263c;"
+    "font:inherit}input:focus{outline:3px solid #dce9ff;border-color:#265ad5}"
+    "button,.link{display:block;width:100%;box-sizing:border-box;padding:12px;border:0;"
+    "border-radius:10px;margin-top:12px;color:#fff;text-align:center;text-decoration:none;"
+    "font:650 1em system-ui;cursor:pointer}.primary{background:#2556d8}.secondary{background:#edf2fa;"
+    "color:#223556}.warning{background:#a55310}.danger{background:#a12b32}"
+    "button:disabled{opacity:.55;cursor:not-allowed}#status{white-space:pre-wrap;padding:13px;"
+    "border-radius:10px;background:#eef4ff;margin:16px 0;color:#314a70}.ok{color:#08613c}"
+    ".err{color:#aa2730}.hint{color:#66758a;font-size:.9em;line-height:1.45}"
+    ".audio-state{padding:11px;background:#f1f5fa;border-radius:10px;color:#40536c}"
+    ".check{display:flex;gap:8px;align-items:center}.check input{width:auto;margin:0}"
+    "details{border-top:1px solid #dbe3ed;margin-top:20px;padding-top:16px}"
+    "summary{font-weight:700;cursor:pointer;color:#29487f}"
+    ".actions{display:grid;grid-template-columns:1fr 1fr;gap:10px}.actions button{margin-top:12px}"
+    "@media(max-width:560px){body{padding:12px}.card{padding:18px}.actions{grid-template-columns:1fr}}"
+    "</style></head><body><main><h1>Cấu hình robot</h1>"
+    "<p class='intro'>Chỉ cần đổi Wi-Fi khi chuyển mạng. Điểm danh hằng ngày trên sổ giáo viên.</p>"
+    "<div class='card'><h2>Kết nối Wi-Fi</h2>"
+    "<div id='status'>Đang đọc trạng thái...</div>"
+    "<button class='secondary' type='button' onclick='scanWifi()'>Quét Wi-Fi 2,4 GHz</button>"
+    "<form id='configForm'><label>Wi-Fi SSID</label>"
+    "<input id='ssid' name='ssid' maxlength='32' list='networks' required><datalist id='networks'></datalist>"
+    "<label>Mật khẩu Wi-Fi</label><input name='wifi_password' type='password' maxlength='63' autocomplete='new-password' placeholder='Để trống nếu không đổi mạng hoặc mật khẩu'>"
+    "<details id='advanced'><summary>Cài đặt kỹ thuật (lần đầu / khi đổi hệ thống)</summary>"
+    "<p class='hint'>Device secret là khóa riêng để robot xác thực với Sheets. Chỉ quản trị viên cần nhập khi cài lần đầu hoặc đổi khóa; robot không hiển thị khóa cũ.</p>"
+    "<label>Apps Script /exec URL</label><input name='gas_url' type='url' maxlength='383' "
+    "placeholder='https://script.google.com/macros/s/.../exec'>"
+    "<label>Device ID</label><input id='deviceId' name='device_id' maxlength='31' placeholder='robot-01'>"
+    "<label>Device secret mới</label><input name='device_secret' type='password' minlength='32' maxlength='127' "
+    "autocomplete='new-password' placeholder='Để trống để giữ khóa hiện tại'></details>"
+    "<button id='saveBtn' class='primary' type='submit'>Kiểm tra và lưu cấu hình</button></form>"
+    "<button id='restartBtn' class='primary' type='button' style='display:none' onclick='restartRobot()'>Khởi động lại để áp dụng</button>"
+    "<details><summary>Khôi phục cấu hình (quản trị viên)</summary>"
+    "<p class='hint'>Chỉ dùng khi cài đặt mới thất bại. Reset không xóa khuôn mặt hoặc lịch sử.</p>"
+    "<button id='rollbackBtn' class='warning' type='button' onclick='rollbackConfig()'>Quay lại cấu hình trước</button>"
+    "<button class='danger' type='button' onclick='resetConfig()'>Xóa cấu hình mạng/cloud</button></details></div>"
+    "<div class='card'><h2>Âm thanh</h2>"
+    "<div id='audioState' class='audio-state'>Đang đọc trạng thái audio...</div>"
+    "<p class='hint'>Âm lượng mặc định 30/30 (mức đã kiểm thử).</p>"
+    "<label class='check'><input id='audioEnabled' type='checkbox'> Bật phản hồi âm thanh</label>"
+    "<button class='primary' type='button' onclick='saveAudio()'>Lưu cấu hình âm thanh</button>"
+    "<button class='secondary' type='button' onclick='testAudio()'>Phát thử câu điểm danh thành công</button>"
+    "<details><summary>Kiểm tra lời chào theo học sinh</summary>"
+    "<label>Student ID (1–50)</label>"
+    "<input id='audioStudentId' type='number' min='1' max='50' placeholder='Ví dụ: 1'>"
+    "<button class='secondary' type='button' onclick='testStudentAudio()'>Phát thử lời chào có tên</button>"
+    "<p class='hint'>Nếu UART đã sẵn sàng nhưng module chưa phản hồi, kiểm tra thẻ microSD, "
+    "nguồn 5V, GND chung và hai dây TX/RX đấu chéo.</p></details>"
+    "<a class='link secondary' href='/'>Quay lại đăng ký khuôn mặt</a></div></main><script>"
+    "const statusEl=document.getElementById('status');"
+    "function show(message,ok){statusEl.textContent=message;statusEl.className=ok?'ok':'err'}"
+    "async function jsonFetch(url,options){const response=await fetch(url,options);"
+    "let value;try{value=await response.json()}catch(e){throw new Error('Phản hồi không hợp lệ')}"
+    "if(!response.ok||!value.ok)throw new Error(value.error||'Yêu cầu thất bại');return value}"
+    "async function refresh(){try{const value=await jsonFetch('/config/status');"
+    "show(value.configured?'Đã kết nối cấu hình. Nếu chỉ đổi Wi-Fi, không cần nhập lại mục kỹ thuật.':'Cài đặt lần đầu: mở Cài đặt kỹ thuật và điền thông tin cloud.',true);"
+    "if(!value.configured)document.getElementById('advanced').open=true;"
+    "if(value.ssid)document.getElementById('ssid').value=value.ssid;"
+    "if(value.device_id)document.getElementById('deviceId').value=value.device_id;"
+    "document.getElementById('rollbackBtn').disabled=!value.rollback_available;pollConfigJob()}catch(e){show(e.message,false)}}"
+    "async function scanWifi(){show('Đang quét Wi-Fi...',true);try{const value=await jsonFetch('/wifi-scan');"
+    "const list=document.getElementById('networks');list.textContent='';value.networks.forEach(function(network){"
+    "const option=document.createElement('option');option.value=network.ssid;option.label=network.rssi+' dBm';list.appendChild(option)});"
+    "show('Đã tìm thấy '+value.networks.length+' mạng. Chọn SSID rồi nhập mật khẩu.',true)}catch(e){show(e.message,false)}}"
+    "document.getElementById('configForm').onsubmit=async function(event){event.preventDefault();"
+    "const button=document.getElementById('saveBtn');button.disabled=true;"
+    "show('Đã nhận yêu cầu. Robot sắp thử Wi-Fi, AP có thể ngắt vài giây...',true);"
+    "try{const body=new URLSearchParams(new FormData(event.target));await jsonFetch('/config/test-and-save',{method:'POST',body});"
+    "setTimeout(pollConfigJob,700)}catch(e){show('Không thể bắt đầu kiểm tra: '+e.message,false);button.disabled=false}};"
+    "async function pollConfigJob(){try{const value=await jsonFetch('/config/job');"
+    "if(value.state==='running'){show('Đang thử Wi-Fi, NTP và Apps Script. Nếu AP đổi kênh, hãy chờ máy tự kết nối lại...',true);setTimeout(pollConfigJob,1500);return}"
+    "document.getElementById('saveBtn').disabled=false;"
+    "if(value.state==='saved'){show('Đã kiểm tra và lưu. Bấm khởi động lại để áp dụng.',true);"
+    "document.querySelector('[name=wifi_password]').value='';"
+    "document.querySelector('[name=device_secret]').value='';"
+    "document.getElementById('restartBtn').style.display='block'}"
+    "else if(value.state==='failed'){show('Không lưu cấu hình: '+value.error,false)}"
+    "}catch(e){show('AP đang đổi kênh hoặc tạm mất kết nối. Kết nối lại RobotSetup; trang sẽ tự kiểm tra tiếp...',true);setTimeout(pollConfigJob,2500)}}"
+    "async function restartRobot(){show('Robot đang khởi động lại...',true);try{await jsonFetch('/config/restart',{method:'POST'})}catch(e){}}"
+    "async function rollbackConfig(){if(prompt('Nhập ROLLBACK để quay lại cấu hình trước:')!=='ROLLBACK')return;"
+    "try{const value=await jsonFetch('/config/rollback',{method:'POST',body:new URLSearchParams({confirm:'ROLLBACK'})});"
+    "show('Đã chọn generation '+value.generation+'. Robot đang khởi động lại...',true)}catch(e){show(e.message,false)}}"
+    "async function resetConfig(){if(prompt('Chỉ xóa Wi-Fi/cloud; giữ khuôn mặt và lịch sử. Nhập RESET CONFIG:')!=='RESET CONFIG')return;"
+    "try{await jsonFetch('/config/reset',{method:'POST',body:new URLSearchParams({confirm:'RESET CONFIG'})});"
+    "show('Đã xóa cấu hình mạng/cloud. Danh tính vẫn được giữ. Robot đang khởi động lại...',true)}catch(e){show(e.message,false)}}"
+    "async function refreshAudio(){try{const value=await jsonFetch('/audio/status');"
+    "document.getElementById('audioEnabled').checked=value.enabled;"
+    "document.getElementById('audioState').textContent='UART '+(value.initialized?'sẵn sàng':'đang khởi tạo')"
+    "+' · DFPlayer '+(value.module_responding?'đã phản hồi':'chưa phản hồi')"
+    "+' · dropped '+value.dropped_events}catch(e){document.getElementById('audioState').textContent=e.message}}"
+    "async function saveAudio(){try{const body=new URLSearchParams({enabled:document.getElementById('audioEnabled').checked?'1':'0',"
+    "volume:'30'});await jsonFetch('/audio/config',{method:'POST',body});"
+    "show('Đã lưu cấu hình âm thanh.',true);await refreshAudio()}catch(e){show(e.message,false)}}"
+    "async function testAudio(){try{await jsonFetch('/audio/test',{method:'POST',body:new URLSearchParams({track:'2'})});"
+    "show('Đã gửi lệnh phát /mp3/0002.mp3.',true);setTimeout(refreshAudio,500)}catch(e){show(e.message,false)}}"
+    "async function testStudentAudio(){const id=Number(document.getElementById('audioStudentId').value);"
+    "if(!Number.isInteger(id)||id<1||id>50){show('Nhập Student ID từ 1 đến 50.',false);return;}"
+    "const track=1000+id;try{await jsonFetch('/audio/test',{method:'POST',"
+    "body:new URLSearchParams({track:String(track)})});"
+    "show('Đã gửi lệnh phát /mp3/'+String(track).padStart(4,'0')+'.mp3.',true);"
+    "setTimeout(refreshAudio,500)}catch(e){show(e.message,false)}}"
+    "refresh();refreshAudio();</script></body></html>";
 
 /* ─── GET / ──────────────────────────────────────────────────── */
 static esp_err_t handler_root(httpd_req_t *req)
@@ -173,6 +515,309 @@ static esp_err_t handler_root(httpd_req_t *req)
     httpd_resp_set_type(req, "text/html; charset=UTF-8");
     httpd_resp_send(req, INDEX_HTML, HTTPD_RESP_USE_STRLEN);
     return ESP_OK;
+}
+
+static esp_err_t handler_config_page(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "text/html; charset=UTF-8");
+    return httpd_resp_send(req, CONFIG_HTML, HTTPD_RESP_USE_STRLEN);
+}
+
+static esp_err_t send_config_error(httpd_req_t *req, const char *error)
+{
+    httpd_resp_set_status(req, HTTPD_400);
+    httpd_resp_set_type(req, "application/json; charset=UTF-8");
+    char response[128];
+    snprintf(response, sizeof(response), "{\"ok\":false,\"error\":\"%s\"}", error);
+    return httpd_resp_send(req, response, HTTPD_RESP_USE_STRLEN);
+}
+
+static esp_err_t handler_config_status(httpd_req_t *req)
+{
+    device_config_values_t values = {0};
+    device_config_status_t status = {0};
+    const bool configured = device_config_load(&values, &status) == ESP_OK;
+    httpd_resp_set_type(req, "application/json; charset=UTF-8");
+    char prefix[192];
+    snprintf(prefix, sizeof(prefix),
+             "{\"ok\":true,\"configured\":%s,\"rollback_available\":%s,"
+             "\"generation\":%lu,\"active_slot\":\"%c\",\"ssid\":",
+             configured ? "true" : "false",
+             status.rollback_available ? "true" : "false",
+             (unsigned long)status.generation,
+             status.active_slot == 0 ? 'A' : status.active_slot == 1 ? 'B' : '-');
+    esp_err_t error = httpd_resp_send_chunk(req, prefix, HTTPD_RESP_USE_STRLEN);
+    if (error == ESP_OK) error = send_json_string(req, configured ? values.wifi_ssid : "");
+    if (error == ESP_OK) {
+        error = httpd_resp_send_chunk(req, ",\"device_id\":", HTTPD_RESP_USE_STRLEN);
+    }
+    if (error == ESP_OK) error = send_json_string(req, configured ? values.device_id : "");
+    if (error == ESP_OK) error = httpd_resp_send_chunk(req, "}", 1);
+    if (error == ESP_OK) error = httpd_resp_send_chunk(req, NULL, 0);
+    return error;
+}
+
+static esp_err_t handler_wifi_scan(httpd_req_t *req)
+{
+    wifi_scan_config_t scan = {
+        .show_hidden = false,
+        .scan_type = WIFI_SCAN_TYPE_ACTIVE,
+    };
+    if (esp_wifi_scan_start(&scan, true) != ESP_OK) {
+        return send_config_error(req, "wifi_scan_failed");
+    }
+    uint16_t count = WIFI_SCAN_LIMIT;
+    wifi_ap_record_t records[WIFI_SCAN_LIMIT] = {0};
+    if (esp_wifi_scan_get_ap_records(&count, records) != ESP_OK) {
+        return send_config_error(req, "wifi_scan_failed");
+    }
+    httpd_resp_set_type(req, "application/json; charset=UTF-8");
+    esp_err_t error = httpd_resp_send_chunk(req, "{\"ok\":true,\"networks\":[",
+                                            HTTPD_RESP_USE_STRLEN);
+    for (uint16_t index = 0; error == ESP_OK && index < count; index++) {
+        if (index > 0) error = httpd_resp_send_chunk(req, ",", 1);
+        if (error != ESP_OK) break;
+        error = httpd_resp_send_chunk(req, "{\"ssid\":", HTTPD_RESP_USE_STRLEN);
+        if (error == ESP_OK) {
+            error = send_json_string(req, (const char *)records[index].ssid);
+        }
+        if (error == ESP_OK) {
+            char suffix[48];
+            snprintf(suffix, sizeof(suffix), ",\"rssi\":%d}", records[index].rssi);
+            error = httpd_resp_send_chunk(req, suffix, HTTPD_RESP_USE_STRLEN);
+        }
+    }
+    if (error == ESP_OK) error = httpd_resp_send_chunk(req, "]}", 2);
+    if (error == ESP_OK) error = httpd_resp_send_chunk(req, NULL, 0);
+    return error;
+}
+
+static esp_err_t handler_config_save(httpd_req_t *req)
+{
+    char *body = NULL;
+    if (read_request_body(req, &body, 3072) != ESP_OK) {
+        return send_config_error(req, "invalid_body");
+    }
+    device_config_values_t candidate = {0};
+    const bool parsed =
+        form_get_value(body, "ssid", candidate.wifi_ssid,
+                       sizeof(candidate.wifi_ssid)) &&
+        form_get_value(body, "wifi_password", candidate.wifi_password,
+                       sizeof(candidate.wifi_password)) &&
+        form_get_value(body, "gas_url", candidate.gas_url,
+                       sizeof(candidate.gas_url)) &&
+        form_get_value(body, "device_id", candidate.device_id,
+                       sizeof(candidate.device_id)) &&
+        form_get_value(body, "device_secret", candidate.device_secret,
+                       sizeof(candidate.device_secret));
+    free(body);
+    if (parsed) {
+        device_config_values_t current = {0};
+        if (device_config_load(&current, NULL) == ESP_OK) {
+            /* Blank fields mean 'keep existing', never expose secrets in GET. */
+            if (candidate.wifi_password[0] == '\0' &&
+                strcmp(candidate.wifi_ssid, current.wifi_ssid) == 0) {
+                memcpy(candidate.wifi_password, current.wifi_password,
+                       sizeof(candidate.wifi_password));
+            }
+            if (candidate.gas_url[0] == '\0') {
+                memcpy(candidate.gas_url, current.gas_url,
+                       sizeof(candidate.gas_url));
+            }
+            if (candidate.device_id[0] == '\0') {
+                memcpy(candidate.device_id, current.device_id,
+                       sizeof(candidate.device_id));
+            }
+            if (candidate.device_secret[0] == '\0') {
+                memcpy(candidate.device_secret, current.device_secret,
+                       sizeof(candidate.device_secret));
+            }
+        }
+        memset(&current, 0, sizeof(current));
+    }
+    if (!parsed || !device_config_values_valid(&candidate)) {
+        memset(&candidate, 0, sizeof(candidate));
+        return send_config_error(req, "invalid_configuration");
+    }
+    if (s_config_job_state == CONFIG_JOB_RUNNING) {
+        memset(&candidate, 0, sizeof(candidate));
+        return send_config_error(req, "config_test_busy");
+    }
+    s_config_job_candidate = candidate;
+    memset(&candidate, 0, sizeof(candidate));
+    s_config_job_error[0] = '\0';
+    s_config_job_generation = 0;
+    s_config_job_slot = DEVICE_CONFIG_SLOT_NONE;
+    s_config_job_state = CONFIG_JOB_RUNNING;
+    if (xTaskCreate(config_job_task, "config_test", CONFIG_JOB_TASK_STACK, NULL,
+                    CONFIG_JOB_TASK_PRIORITY, NULL) != pdPASS) {
+        memset(&s_config_job_candidate, 0, sizeof(s_config_job_candidate));
+        s_config_job_state = CONFIG_JOB_IDLE;
+        return send_config_error(req, "config_test_start_failed");
+    }
+    httpd_resp_set_type(req, "application/json; charset=UTF-8");
+    return httpd_resp_send(req, "{\"ok\":true,\"state\":\"testing\"}",
+                           HTTPD_RESP_USE_STRLEN);
+}
+
+static esp_err_t handler_config_job(httpd_req_t *req)
+{
+    const config_job_state_t state = s_config_job_state;
+    const char *state_name = state == CONFIG_JOB_RUNNING ? "running" :
+                             state == CONFIG_JOB_SAVED ? "saved" :
+                             state == CONFIG_JOB_FAILED ? "failed" : "idle";
+    char response[160];
+    snprintf(response, sizeof(response),
+             "{\"ok\":true,\"state\":\"%s\",\"error\":\"%s\","
+             "\"generation\":%lu,\"active_slot\":\"%c\"}",
+             state_name, state == CONFIG_JOB_FAILED ? s_config_job_error : "",
+             (unsigned long)s_config_job_generation,
+             s_config_job_slot == 0 ? 'A' : s_config_job_slot == 1 ? 'B' : '-');
+    httpd_resp_set_type(req, "application/json; charset=UTF-8");
+    return httpd_resp_send(req, response, HTTPD_RESP_USE_STRLEN);
+}
+
+static esp_err_t handler_config_restart(httpd_req_t *req)
+{
+    if (s_config_job_state != CONFIG_JOB_SAVED) {
+        return send_config_error(req, "no_saved_config_to_apply");
+    }
+    if (schedule_restart() != ESP_OK) {
+        return send_config_error(req, "restart_schedule_failed");
+    }
+    httpd_resp_set_type(req, "application/json; charset=UTF-8");
+    return httpd_resp_send(req, "{\"ok\":true,\"restarting\":true}",
+                           HTTPD_RESP_USE_STRLEN);
+}
+
+static bool request_confirmation(httpd_req_t *req, const char *expected)
+{
+    char *body = NULL;
+    if (read_request_body(req, &body, 128) != ESP_OK) return false;
+    char confirmation[32] = {0};
+    const bool accepted = form_get_value(body, "confirm", confirmation,
+                                         sizeof(confirmation)) &&
+                          strcmp(confirmation, expected) == 0;
+    free(body);
+    return accepted;
+}
+
+static esp_err_t handler_config_rollback(httpd_req_t *req)
+{
+    if (s_config_job_state == CONFIG_JOB_RUNNING) {
+        return send_config_error(req, "config_test_busy");
+    }
+    if (!request_confirmation(req, "ROLLBACK")) {
+        return send_config_error(req, "confirmation_required");
+    }
+    device_config_status_t status = {0};
+    if (device_config_rollback(&status) != ESP_OK) {
+        return send_config_error(req, "rollback_unavailable");
+    }
+    char response[72];
+    snprintf(response, sizeof(response), "{\"ok\":true,\"generation\":%lu}",
+             (unsigned long)status.generation);
+    httpd_resp_set_type(req, "application/json; charset=UTF-8");
+    if (schedule_restart() != ESP_OK) {
+        return send_config_error(req, "restart_schedule_failed");
+    }
+    const esp_err_t response_error =
+        httpd_resp_send(req, response, HTTPD_RESP_USE_STRLEN);
+    return response_error;
+}
+
+static esp_err_t handler_config_reset(httpd_req_t *req)
+{
+    if (s_config_job_state == CONFIG_JOB_RUNNING) {
+        return send_config_error(req, "config_test_busy");
+    }
+    if (!request_confirmation(req, "RESET CONFIG")) {
+        return send_config_error(req, "confirmation_required");
+    }
+    if (device_config_erase() != ESP_OK) {
+        return send_config_error(req, "config_reset_failed");
+    }
+    httpd_resp_set_type(req, "application/json; charset=UTF-8");
+    if (schedule_restart() != ESP_OK) {
+        return send_config_error(req, "restart_schedule_failed");
+    }
+    const esp_err_t response_error = httpd_resp_send(
+        req, "{\"ok\":true,\"scope\":\"network_cloud_only\"}",
+        HTTPD_RESP_USE_STRLEN);
+    return response_error;
+}
+
+static esp_err_t handler_audio_status(httpd_req_t *req)
+{
+    audio_feedback_status_t status;
+    audio_feedback_get_status(&status);
+    char response[192];
+    snprintf(response, sizeof(response),
+             "{\"ok\":true,\"initialized\":%s,\"enabled\":%s,"
+             "\"module_responding\":%s,\"volume\":%u,\"dropped_events\":%lu}",
+             status.initialized ? "true" : "false",
+             status.enabled ? "true" : "false",
+             status.module_responding ? "true" : "false",
+             status.volume, (unsigned long)status.dropped_events);
+    httpd_resp_set_type(req, "application/json; charset=UTF-8");
+    return httpd_resp_send(req, response, HTTPD_RESP_USE_STRLEN);
+}
+
+static esp_err_t handler_audio_config(httpd_req_t *req)
+{
+    char *body = NULL;
+    if (read_request_body(req, &body, 128) != ESP_OK) {
+        return send_config_error(req, "invalid_audio_body");
+    }
+    char enabled_text[4] = {0};
+    char volume_text[4] = {0};
+    const bool parsed =
+        form_get_value(body, "enabled", enabled_text, sizeof(enabled_text)) &&
+        form_get_value(body, "volume", volume_text, sizeof(volume_text));
+    free(body);
+    char *end = NULL;
+    const long volume = parsed ? strtol(volume_text, &end, 10) : -1;
+    if (!parsed ||
+        (strcmp(enabled_text, "0") != 0 && strcmp(enabled_text, "1") != 0) ||
+        end == volume_text || *end != '\0' ||
+        volume < 0 || volume > (long)AUDIO_FEEDBACK_MAX_VOLUME) {
+        return send_config_error(req, "invalid_audio_configuration");
+    }
+    const esp_err_t error =
+        audio_feedback_set_config(strcmp(enabled_text, "1") == 0,
+                                  (uint8_t)volume);
+    if (error != ESP_OK) {
+        ESP_LOGW(TAG, "Cannot save/apply audio config: %s",
+                 esp_err_to_name(error));
+        return send_config_error(req, "audio_configuration_failed");
+    }
+    httpd_resp_set_type(req, "application/json; charset=UTF-8");
+    return httpd_resp_send(req, "{\"ok\":true}", HTTPD_RESP_USE_STRLEN);
+}
+
+static esp_err_t handler_audio_test(httpd_req_t *req)
+{
+    char *body = NULL;
+    if (read_request_body(req, &body, 64) != ESP_OK) {
+        return send_config_error(req, "invalid_audio_test");
+    }
+    char track_text[6] = {0};
+    const bool parsed =
+        form_get_value(body, "track", track_text, sizeof(track_text));
+    free(body);
+    char *end = NULL;
+    const long track = parsed ? strtol(track_text, &end, 10) : -1;
+    if (!parsed || end == track_text || *end != '\0' ||
+        !((track >= 1 && track <= AUDIO_FEEDBACK_TRACK_COUNT) ||
+          (track > AUDIO_FEEDBACK_STUDENT_TRACK_BASE &&
+           track <= AUDIO_FEEDBACK_STUDENT_TRACK_LAST))) {
+        return send_config_error(req, "invalid_audio_track");
+    }
+    if (audio_feedback_test_track((uint16_t)track) != ESP_OK) {
+        return send_config_error(req, "audio_not_ready");
+    }
+    httpd_resp_set_type(req, "application/json; charset=UTF-8");
+    return httpd_resp_send(req, "{\"ok\":true}", HTTPD_RESP_USE_STRLEN);
 }
 
 static esp_err_t handler_students(httpd_req_t *req)
@@ -197,9 +842,12 @@ static esp_err_t handler_students(httpd_req_t *req)
         count++;
     }
     if (err == ESP_OK) {
-        char suffix[64];
-        snprintf(suffix, sizeof(suffix), "],\"count\":%d,\"capacity\":%d}",
-                 count, ENROLLMENT_CAPACITY);
+        char suffix[128];
+        const int face_count = face_engine_get_enrolled_count();
+        snprintf(suffix, sizeof(suffix),
+                 "],\"count\":%d,\"face_count\":%d,\"consistent\":%s,\"capacity\":%d}",
+                 count, face_count, count == face_count ? "true" : "false",
+                 ENROLLMENT_CAPACITY);
         err = httpd_resp_send_chunk(req, suffix, HTTPD_RESP_USE_STRLEN);
     }
     if (err == ESP_OK) err = httpd_resp_send_chunk(req, NULL, 0);
@@ -264,6 +912,7 @@ static esp_err_t handler_enroll(httpd_req_t *req)
                          esp_err_to_name(marker_err));
             }
             snprintf(resp, sizeof(resp), "{\"ok\":true,\"face_id\":%u}", face_id);
+            audio_feedback_notify(AUDIO_EVENT_ENROLL_SUCCESS);
             ESP_LOGI(TAG, "Enrolled: id=%u name='%s' class='%s'", face_id, name, class_name);
         } else {
             ESP_LOGE(TAG, "Student metadata save failed: %s; rolling back face",
@@ -329,9 +978,30 @@ static esp_err_t handler_undo(httpd_req_t *req)
 static esp_err_t handler_done(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "application/json; charset=UTF-8");
+    if (s_config_job_state == CONFIG_JOB_RUNNING) {
+        httpd_resp_send(req,
+                        "{\"ok\":false,\"error\":\"Đang kiểm tra cấu hình; hãy chờ hoàn tất\"}",
+                        HTTPD_RESP_USE_STRLEN);
+        return ESP_OK;
+    }
+    device_config_values_t runtime_config;
+    if (device_config_load(&runtime_config, NULL) != ESP_OK) {
+        httpd_resp_send(req,
+                        "{\"ok\":false,\"error\":\"Hãy cấu hình và kiểm tra Wi-Fi/cloud trước\"}",
+                        HTTPD_RESP_USE_STRLEN);
+        return ESP_OK;
+    }
+    memset(&runtime_config, 0, sizeof(runtime_config));
     int face_count = face_engine_get_enrolled_count();
     if (face_count <= 0) {
         httpd_resp_send(req, "{\"ok\":false,\"error\":\"Chưa đăng ký học sinh nào\"}",
+                        HTTPD_RESP_USE_STRLEN);
+        return ESP_OK;
+    }
+    const int student_count = student_db_count();
+    if (face_count != student_count) {
+        httpd_resp_send(req,
+                        "{\"ok\":false,\"error\":\"Số khuôn mặt và học sinh không khớp; hãy sửa hoặc reset danh tính\"}",
                         HTTPD_RESP_USE_STRLEN);
         return ESP_OK;
     }
@@ -350,25 +1020,94 @@ static esp_err_t handler_done(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* ─── POST /reset-identities ────────────────────────────────── */
+static esp_err_t handler_reset_identities(httpd_req_t *req)
+{
+    char body[32] = {0};
+    if (req->content_len <= 0 || req->content_len >= sizeof(body)) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid confirmation");
+        return ESP_FAIL;
+    }
+    size_t total = 0;
+    while (total < req->content_len) {
+        const int received = httpd_req_recv(req, body + total,
+                                            req->content_len - total);
+        if (received <= 0) {
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                                "Incomplete confirmation");
+            return ESP_FAIL;
+        }
+        total += (size_t)received;
+    }
+    body[total] = '\0';
+    char confirmation[8] = {0};
+    if (!form_get_value(body, "confirm", confirmation, sizeof(confirmation)) ||
+        strcmp(confirmation, "RESET") != 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Confirmation required");
+        return ESP_FAIL;
+    }
+
+    httpd_resp_set_type(req, "application/json; charset=UTF-8");
+    if (face_engine_clear_all() != 0 || student_db_clear_all() != ESP_OK) {
+        ESP_LOGE(TAG, "Identity reset failed; database may require recovery");
+        httpd_resp_send(req, "{\"ok\":false,\"error\":\"Không thể xóa toàn bộ danh tính\"}",
+                        HTTPD_RESP_USE_STRLEN);
+        return ESP_OK;
+    }
+    ESP_LOGW(TAG, "All face embeddings and student metadata were reset");
+    httpd_resp_send(req, "{\"ok\":true}", HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+}
+
 /* ─── Public API ─────────────────────────────────────────────── */
 esp_err_t enroll_server_start(const char *ap_ssid, const char *ap_pass)
 {
-    if (s_server != NULL || s_wifi_initialized || ap_ssid == NULL || ap_ssid[0] == '\0') {
+    if (s_server != NULL || s_wifi_initialized) {
         return ESP_ERR_INVALID_STATE;
     }
+    if (ap_ssid == NULL || ap_ssid[0] == '\0' || strlen(ap_ssid) > 32 ||
+        ap_pass == NULL || strlen(ap_pass) < 8 || strlen(ap_pass) > 63) {
+        ESP_LOGE(TAG, "Enrollment AP requires a valid SSID and WPA2 password");
+        return ESP_ERR_INVALID_ARG;
+    }
     s_done_requested = false;
+    s_restart_requested = false;
+    s_candidate_connecting = false;
+    s_config_job_state = CONFIG_JOB_IDLE;
+    memset(&s_config_job_candidate, 0, sizeof(s_config_job_candidate));
+    s_config_job_error[0] = '\0';
+    s_config_job_generation = 0;
+    s_config_job_slot = DEVICE_CONFIG_SLOT_NONE;
     esp_err_t err;
 
-    /* ── Cấu hình AP (netif và event loop đã init trong app_main) ── */
+    /* AP+STA keeps the local maintenance page reachable while a candidate
+     * 2.4 GHz network and cloud credential are tested. */
     s_ap_netif = esp_netif_create_default_wifi_ap();
-    if (s_ap_netif == NULL) {
-        return ESP_ERR_NO_MEM;
+    s_sta_netif = esp_netif_create_default_wifi_sta();
+    if (s_ap_netif == NULL || s_sta_netif == NULL) {
+        err = ESP_ERR_NO_MEM;
+        goto fail;
+    }
+    s_provisioning_events = xEventGroupCreate();
+    if (s_provisioning_events == NULL) {
+        err = ESP_ERR_NO_MEM;
+        goto fail;
     }
 
     wifi_init_config_t init_cfg = WIFI_INIT_CONFIG_DEFAULT();
     err = esp_wifi_init(&init_cfg);
     if (err != ESP_OK) goto fail;
     s_wifi_initialized = true;
+    err = esp_wifi_set_storage(WIFI_STORAGE_RAM);
+    if (err != ESP_OK) goto fail;
+    err = esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
+                                               provisioning_event_handler, NULL,
+                                               &s_wifi_event_instance);
+    if (err != ESP_OK) goto fail;
+    err = esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
+                                               provisioning_event_handler, NULL,
+                                               &s_ip_event_instance);
+    if (err != ESP_OK) goto fail;
 
     /* ── Cấu hình AP ── */
     wifi_config_t ap_cfg = {0};
@@ -376,23 +1115,25 @@ esp_err_t enroll_server_start(const char *ap_ssid, const char *ap_pass)
     ap_cfg.ap.ssid_len = (uint8_t)strlen(ap_ssid);
     ap_cfg.ap.max_connection = 4;
     ap_cfg.ap.channel = 6;
-    if (ap_pass && strlen(ap_pass) >= 8) {
-        strncpy((char *)ap_cfg.ap.password, ap_pass, sizeof(ap_cfg.ap.password) - 1);
-        ap_cfg.ap.authmode = WIFI_AUTH_WPA2_PSK;
-    } else {
-        ap_cfg.ap.authmode = WIFI_AUTH_OPEN;
-    }
-    err = esp_wifi_set_mode(WIFI_MODE_AP);
+    strncpy((char *)ap_cfg.ap.password, ap_pass, sizeof(ap_cfg.ap.password) - 1);
+    ap_cfg.ap.authmode = WIFI_AUTH_WPA2_PSK;
+    err = esp_wifi_set_mode(WIFI_MODE_APSTA);
     if (err != ESP_OK) goto fail;
     err = esp_wifi_set_config(WIFI_IF_AP, &ap_cfg);
     if (err != ESP_OK) goto fail;
     err = esp_wifi_start();
     if (err != ESP_OK) goto fail;
     s_wifi_started = true;
+    /* The portal is a short-range interactive control surface. Disabling
+     * modem sleep avoids delayed/missed beacons that make phones and Ubuntu
+     * appear to lose the AP while the page is idle. */
+    err = esp_wifi_set_ps(WIFI_PS_NONE);
+    if (err != ESP_OK) goto fail;
 
     /* Khởi động HTTP server */
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.lru_purge_enable = true;
+    cfg.max_uri_handlers = 20;
     err = httpd_start(&s_server, &cfg);
     if (err != ESP_OK) goto fail;
 
@@ -401,6 +1142,52 @@ esp_err_t enroll_server_start(const char *ap_ssid, const char *ap_pass)
     static const httpd_uri_t uri_enroll   = { .uri = "/enroll",   .method = HTTP_POST, .handler = handler_enroll   };
     static const httpd_uri_t uri_undo     = { .uri = "/undo",     .method = HTTP_POST, .handler = handler_undo     };
     static const httpd_uri_t uri_done     = { .uri = "/done",     .method = HTTP_POST, .handler = handler_done     };
+    static const httpd_uri_t uri_reset = {
+        .uri = "/reset-identities", .method = HTTP_POST,
+        .handler = handler_reset_identities
+    };
+    static const httpd_uri_t uri_config = {
+        .uri = "/config", .method = HTTP_GET, .handler = handler_config_page
+    };
+    static const httpd_uri_t uri_config_status = {
+        .uri = "/config/status", .method = HTTP_GET,
+        .handler = handler_config_status
+    };
+    static const httpd_uri_t uri_wifi_scan = {
+        .uri = "/wifi-scan", .method = HTTP_GET, .handler = handler_wifi_scan
+    };
+    static const httpd_uri_t uri_config_save = {
+        .uri = "/config/test-and-save", .method = HTTP_POST,
+        .handler = handler_config_save
+    };
+    static const httpd_uri_t uri_config_job = {
+        .uri = "/config/job", .method = HTTP_GET,
+        .handler = handler_config_job
+    };
+    static const httpd_uri_t uri_config_restart = {
+        .uri = "/config/restart", .method = HTTP_POST,
+        .handler = handler_config_restart
+    };
+    static const httpd_uri_t uri_config_rollback = {
+        .uri = "/config/rollback", .method = HTTP_POST,
+        .handler = handler_config_rollback
+    };
+    static const httpd_uri_t uri_config_reset = {
+        .uri = "/config/reset", .method = HTTP_POST,
+        .handler = handler_config_reset
+    };
+    static const httpd_uri_t uri_audio_status = {
+        .uri = "/audio/status", .method = HTTP_GET,
+        .handler = handler_audio_status
+    };
+    static const httpd_uri_t uri_audio_config = {
+        .uri = "/audio/config", .method = HTTP_POST,
+        .handler = handler_audio_config
+    };
+    static const httpd_uri_t uri_audio_test = {
+        .uri = "/audio/test", .method = HTTP_POST,
+        .handler = handler_audio_test
+    };
     err = httpd_register_uri_handler(s_server, &uri_root);
     if (err != ESP_OK) goto fail;
     err = httpd_register_uri_handler(s_server, &uri_students);
@@ -411,8 +1198,32 @@ esp_err_t enroll_server_start(const char *ap_ssid, const char *ap_pass)
     if (err != ESP_OK) goto fail;
     err = httpd_register_uri_handler(s_server, &uri_done);
     if (err != ESP_OK) goto fail;
+    err = httpd_register_uri_handler(s_server, &uri_reset);
+    if (err != ESP_OK) goto fail;
+    err = httpd_register_uri_handler(s_server, &uri_config);
+    if (err != ESP_OK) goto fail;
+    err = httpd_register_uri_handler(s_server, &uri_config_status);
+    if (err != ESP_OK) goto fail;
+    err = httpd_register_uri_handler(s_server, &uri_wifi_scan);
+    if (err != ESP_OK) goto fail;
+    err = httpd_register_uri_handler(s_server, &uri_config_save);
+    if (err != ESP_OK) goto fail;
+    err = httpd_register_uri_handler(s_server, &uri_config_job);
+    if (err != ESP_OK) goto fail;
+    err = httpd_register_uri_handler(s_server, &uri_config_restart);
+    if (err != ESP_OK) goto fail;
+    err = httpd_register_uri_handler(s_server, &uri_config_rollback);
+    if (err != ESP_OK) goto fail;
+    err = httpd_register_uri_handler(s_server, &uri_config_reset);
+    if (err != ESP_OK) goto fail;
+    err = httpd_register_uri_handler(s_server, &uri_audio_status);
+    if (err != ESP_OK) goto fail;
+    err = httpd_register_uri_handler(s_server, &uri_audio_config);
+    if (err != ESP_OK) goto fail;
+    err = httpd_register_uri_handler(s_server, &uri_audio_test);
+    if (err != ESP_OK) goto fail;
 
-    ESP_LOGI(TAG, "Enroll server UP — SSID: %s  IP: 192.168.4.1", ap_ssid);
+    ESP_LOGI(TAG, "Maintenance server UP — SSID: %s  IP: 192.168.4.1", ap_ssid);
     return ESP_OK;
 
 fail:
@@ -424,6 +1235,7 @@ fail:
 esp_err_t enroll_server_stop(void)
 {
     esp_err_t first_error = ESP_OK;
+    s_candidate_connecting = false;
     if (s_server) {
         esp_err_t err = httpd_stop(s_server);
         if (err != ESP_OK && first_error == ESP_OK) first_error = err;
@@ -435,6 +1247,16 @@ esp_err_t enroll_server_stop(void)
         s_wifi_started = false;
     }
     if (s_wifi_initialized) {
+        if (s_wifi_event_instance != NULL) {
+            esp_event_handler_instance_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID,
+                                                  s_wifi_event_instance);
+            s_wifi_event_instance = NULL;
+        }
+        if (s_ip_event_instance != NULL) {
+            esp_event_handler_instance_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP,
+                                                  s_ip_event_instance);
+            s_ip_event_instance = NULL;
+        }
         esp_err_t err = esp_wifi_deinit();
         if (err != ESP_OK && first_error == ESP_OK) first_error = err;
         s_wifi_initialized = false;
@@ -443,6 +1265,14 @@ esp_err_t enroll_server_stop(void)
         esp_netif_destroy_default_wifi(s_ap_netif);
         s_ap_netif = NULL;
     }
+    if (s_sta_netif != NULL) {
+        esp_netif_destroy_default_wifi(s_sta_netif);
+        s_sta_netif = NULL;
+    }
+    if (s_provisioning_events != NULL) {
+        vEventGroupDelete(s_provisioning_events);
+        s_provisioning_events = NULL;
+    }
     ESP_LOGI(TAG, "Enroll server stopped");
     return first_error;
 }
@@ -450,4 +1280,9 @@ esp_err_t enroll_server_stop(void)
 bool enroll_server_done(void)
 {
     return s_done_requested;
+}
+
+bool enroll_server_restart_requested(void)
+{
+    return s_restart_requested;
 }

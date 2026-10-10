@@ -4,6 +4,8 @@
 #include "esp_camera.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "human_face_detect.hpp"
 #include "human_face_recognition.hpp"
 #include "img_converters.h"
@@ -14,8 +16,14 @@ static const char *TAG = "face_engine";
 static HumanFaceDetect *s_detector;
 static HumanFaceRecognizer *s_recognizer;
 static uint8_t *s_rgb565_buffer;
-static dl::image::pix_type_t s_camera_pix_type = dl::image::DL_IMAGE_PIX_TYPE_RGB565LE;
-static bool s_camera_pix_type_verified;
+static size_t s_rgb565_capacity;
+#define CAMERA_DECODE_ATTEMPTS 3
+#define CAMERA_RETRY_DELAY_MS  30
+/* esp32-camera's JPEG decoder emits RGB565 little-endian. This matches the
+ * official ESP-WHO decode pipeline and avoids running four detector passes on
+ * every idle frame while guessing the byte/color order. */
+static const dl::image::pix_type_t s_camera_pix_type =
+    dl::image::DL_IMAGE_PIX_TYPE_RGB565LE;
 
 static face_engine_result_t make_result(face_engine_state_t state)
 {
@@ -25,6 +33,35 @@ static face_engine_result_t make_result(face_engine_state_t state)
     result.similarity_milli = 0;
     result.face_count = 0;
     return result;
+}
+
+static bool jpeg_has_markers(const camera_fb_t *frame)
+{
+    if (frame == nullptr || frame->buf == nullptr || frame->len < 4 ||
+        frame->buf[0] != 0xff || frame->buf[1] != 0xd8) {
+        return false;
+    }
+    /* Some sensors append a few padding bytes, so search the tail instead of
+     * requiring EOI to be the final two bytes. */
+    const size_t first = frame->len > 32 ? frame->len - 32 : 2;
+    for (size_t index = frame->len - 1; index > first; index--) {
+        if (frame->buf[index - 1] == 0xff && frame->buf[index] == 0xd9) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool ensure_rgb565_capacity(size_t required)
+{
+    if (s_rgb565_buffer != nullptr && s_rgb565_capacity >= required) return true;
+    uint8_t *replacement = (uint8_t *)heap_caps_malloc(
+        required, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (replacement == nullptr) return false;
+    if (s_rgb565_buffer != nullptr) heap_caps_free(s_rgb565_buffer);
+    s_rgb565_buffer = replacement;
+    s_rgb565_capacity = required;
+    return true;
 }
 
 static face_engine_result_t capture_and_detect(camera_fb_t **frame_out,
@@ -37,22 +74,47 @@ static face_engine_result_t capture_and_detect(camera_fb_t **frame_out,
         return result;
     }
 
-    camera_fb_t *frame = esp_camera_fb_get();
-    if (frame == nullptr || frame->format != PIXFORMAT_JPEG) {
-        ESP_LOGE(TAG, "Camera frame unavailable or not JPEG");
-        if (frame != nullptr) {
-            esp_camera_fb_return(frame);
+    camera_fb_t *frame = nullptr;
+    for (int attempt = 1; attempt <= CAMERA_DECODE_ATTEMPTS; attempt++) {
+        frame = esp_camera_fb_get();
+        if (frame == nullptr) {
+            ESP_LOGW(TAG, "Camera returned no frame (attempt %d/%d)",
+                     attempt, CAMERA_DECODE_ATTEMPTS);
+        } else if (frame->format != PIXFORMAT_JPEG) {
+            ESP_LOGW(TAG, "Dropping non-JPEG camera frame (format=%d attempt=%d/%d)",
+                     (int)frame->format, attempt, CAMERA_DECODE_ATTEMPTS);
+        } else {
+            const size_t rgb565_bytes =
+                (size_t)frame->width * (size_t)frame->height * 2U;
+            if (!ensure_rgb565_capacity(rgb565_bytes)) {
+                ESP_LOGE(TAG, "Cannot allocate %u-byte RGB565 buffer",
+                         (unsigned)rgb565_bytes);
+                esp_camera_fb_return(frame);
+                return result;
+            }
+            const bool markers_valid = jpeg_has_markers(frame);
+            if (markers_valid && jpg2rgb565(frame->buf, frame->len,
+                                            s_rgb565_buffer,
+                                            JPEG_IMAGE_SCALE_0)) {
+                break;
+            }
+            ESP_LOGW(TAG,
+                     "Dropping invalid JPEG frame len=%u markers=%s attempt=%d/%d "
+                     "free_internal=%u free_psram=%u",
+                     (unsigned)frame->len, markers_valid ? "yes" : "no",
+                     attempt, CAMERA_DECODE_ATTEMPTS,
+                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
         }
-        return result;
+        if (frame != nullptr) esp_camera_fb_return(frame);
+        frame = nullptr;
+        if (attempt < CAMERA_DECODE_ATTEMPTS) {
+            vTaskDelay(pdMS_TO_TICKS(CAMERA_RETRY_DELAY_MS));
+        }
     }
-
-    const size_t rgb565_bytes = frame->width * frame->height * 2;
-    if (s_rgb565_buffer == nullptr) {
-        s_rgb565_buffer = (uint8_t *)heap_caps_malloc(rgb565_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    }
-    if (s_rgb565_buffer == nullptr || !jpg2rgb565(frame->buf, frame->len, s_rgb565_buffer, JPEG_IMAGE_SCALE_0)) {
-        ESP_LOGE(TAG, "JPEG to RGB565 conversion failed");
-        esp_camera_fb_return(frame);
+    if (frame == nullptr) {
+        ESP_LOGE(TAG, "Camera JPEG decode failed after %d attempts",
+                 CAMERA_DECODE_ATTEMPTS);
         return result;
     }
 
@@ -62,34 +124,7 @@ static face_engine_result_t capture_and_detect(camera_fb_t **frame_out,
         .height = (uint16_t)frame->height,
         .pix_type = s_camera_pix_type,
     };
-    std::list<dl::detect::result_t> best_faces;
-    if (!s_camera_pix_type_verified) {
-        const dl::image::pix_type_t formats[] = {
-            dl::image::DL_IMAGE_PIX_TYPE_RGB565LE,
-            dl::image::DL_IMAGE_PIX_TYPE_RGB565BE,
-            dl::image::DL_IMAGE_PIX_TYPE_BGR565LE,
-            dl::image::DL_IMAGE_PIX_TYPE_BGR565BE,
-        };
-        for (const auto format : formats) {
-            image.pix_type = format;
-            std::list<dl::detect::result_t> &trial_faces = s_detector->run(image);
-            ESP_LOGI(TAG, "Face-format trial %s: %u face(s)",
-                     dl::image::pix_type2str(format).c_str(), (unsigned)trial_faces.size());
-            if (trial_faces.size() > best_faces.size()) {
-                best_faces = trial_faces;
-                s_camera_pix_type = format;
-            }
-        }
-        if (!best_faces.empty()) {
-            s_camera_pix_type_verified = true;
-            ESP_LOGI(TAG, "Selected camera input format: %s", dl::image::pix_type2str(s_camera_pix_type).c_str());
-        }
-    } else {
-        image.pix_type = s_camera_pix_type;
-        best_faces = s_detector->run(image);
-    }
-    image.pix_type = s_camera_pix_type;
-    std::list<dl::detect::result_t> &faces = best_faces;
+    std::list<dl::detect::result_t> faces = s_detector->run(image);
     result.face_count = (int)faces.size();
     if (faces.empty()) {
         result.state = FACE_ENGINE_NO_FACE;
@@ -117,6 +152,8 @@ extern "C" int face_engine_init(const char *database_path)
 
     ESP_LOGI(TAG, "Face models ready; %d enrolled identity/identities, threshold=0.46",
              s_recognizer->get_num_feats());
+    ESP_LOGI(TAG, "Camera decode format fixed to %s",
+             dl::image::pix_type2str(s_camera_pix_type).c_str());
     return 0;
 }
 

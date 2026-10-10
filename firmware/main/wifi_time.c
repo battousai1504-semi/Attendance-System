@@ -11,7 +11,6 @@
 #include "freertos/task.h"
 
 #include "wifi_time.h"
-#include "wifi_time_config.h"
 
 #define WIFI_MAX_RETRIES   5
 #define WIFI_RETRY_PAUSE_MS 30000
@@ -124,14 +123,18 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
     }
 }
 
-esp_err_t wifi_time_start(void)
+esp_err_t wifi_time_start(const char *ssid, const char *password)
 {
     if (s_started) {
         return ESP_OK;
     }
-    if (CDP_WIFI_SSID[0] == '\0') {
+    if (ssid == NULL || password == NULL) return ESP_ERR_INVALID_ARG;
+    const size_t ssid_length = strlen(ssid);
+    const size_t password_length = strlen(password);
+    if (ssid_length == 0 || ssid_length > 32 || password_length > 63 ||
+        (password_length > 0 && password_length < 8)) {
         s_state = WIFI_TIME_NOT_CONFIGURED;
-        ESP_LOGW(TAG, "Wi-Fi SSID is empty; configure wifi_time_config.h");
+        ESP_LOGW(TAG, "Runtime Wi-Fi credentials are invalid; open maintenance portal");
         return ESP_ERR_INVALID_ARG;
     }
     s_started = true;
@@ -159,10 +162,12 @@ esp_err_t wifi_time_start(void)
     result = esp_wifi_init(&init_config);
     if (result != ESP_OK) goto fail;
     s_wifi_initialized = true;
+    result = esp_wifi_set_storage(WIFI_STORAGE_RAM);
+    if (result != ESP_OK) goto fail;
     wifi_config_t config = {0};
-    strlcpy((char *)config.sta.ssid, CDP_WIFI_SSID, sizeof(config.sta.ssid));
-    strlcpy((char *)config.sta.password, CDP_WIFI_PASSWORD, sizeof(config.sta.password));
-    config.sta.threshold.authmode = CDP_WIFI_PASSWORD[0] == '\0' ? WIFI_AUTH_OPEN : WIFI_AUTH_WPA2_PSK;
+    strlcpy((char *)config.sta.ssid, ssid, sizeof(config.sta.ssid));
+    strlcpy((char *)config.sta.password, password, sizeof(config.sta.password));
+    config.sta.threshold.authmode = password[0] == '\0' ? WIFI_AUTH_OPEN : WIFI_AUTH_WPA2_PSK;
     config.sta.pmf_cfg.capable = true;
     config.sta.pmf_cfg.required = false;
     result = esp_wifi_set_mode(WIFI_MODE_STA);
