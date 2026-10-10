@@ -38,17 +38,16 @@ jobs:
         run: idf.py build
 
       - name: Package OTA release artifact
-        run: >-
-          ../tools/package_ota.sh
-          3.0.0-phase3-dev
-          https://example.invalid/robot_attendance.bin
-          build/robot_attendance.bin
-          build/ota-manifest.template.json
+        run: |
+          firmware_version="$(python3 -c 'import json; print(json.load(open("build/project_description.json"))["project_version"])')"
+          ../tools/package_ota.sh "$firmware_version" \
+            https://example.invalid/robot_attendance.bin \
+            build/robot_attendance.bin build/ota-manifest.template.json
 
-      - name: Upload firmware release artifact
+      - name: Upload CI development artifact
         uses: actions/upload-artifact@v4
         with:
-          name: robot-attendance-${{ github.sha }}
+          name: robot-attendance-ci-${{ github.sha }}
           path: |
             firmware/build/robot_attendance.bin
             firmware/build/robot_attendance.sha256
