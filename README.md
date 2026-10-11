@@ -167,3 +167,5 @@ flash/monitor trên Ubuntu nằm trong
   [DFPlayer và đấu dây](P3_TEST_GUIDE.md).
 - Backend: [thiết lập Apps Script](google_apps_script/README.md).
 - UX giáo viên: [kiểm thử bản một chạm](ENDUSER_UX_TEST_GUIDE.md).
+- OTA hiện tại: [bộ image và quy trình thử rollback 11/10/2026](OTA_ROLLBACK_E2E_2026-10-11.md)
+  (đã phát hành pre-release thử nghiệm, chưa nghiệm thu trên board).

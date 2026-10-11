@@ -1,6 +1,20 @@
 # Phase 3 progress
 
-Cập nhật: 2026-10-01.
+Cập nhật: 2026-10-11.
+
+## Bổ sung 2026-10-11 — chuẩn bị OTA/rollback cho bản UX mới
+
+Người dùng cho biết thẻ SD đã có lời chào từng học sinh và dashboard/enroll mới
+đã triển khai; chưa có biên bản đối chiếu từng ID hoặc log nghiệm thu OTA trong
+repository. Hai image local từ source hiện tại đã build và qua `esptool
+image-info`, giới hạn slot 6 MiB và SHA-256:
+`3.1.1-ota-e2e` (bản tốt) và `3.1.2-rollback-e2e` (cố ý lỗi để thử rollback).
+Chi tiết đường dẫn, hash và phép thử nằm trong
+`OTA_ROLLBACK_E2E_2026-10-11.md`. Hai image đã được phát hành ở GitHub
+pre-release `ota-e2e-20261011`; tải lại qua URL công khai và so SHA-256/size
+đều khớp. Chủ dự án đã chấp nhận nguy cơ lộ mật khẩu AP nhúng trong binary.
+**TC-13 vẫn BLOCKED ở phần cứng**: chưa thấy board/cổng serial để xác nhận
+OTA, power-cut và rollback trên robot thật.
 
 ## Bổ sung 2026-10-01 — lời chào theo tên và UX giáo viên
 
