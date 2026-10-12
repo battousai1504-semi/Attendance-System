@@ -268,7 +268,7 @@ portal; reset bất ngờ không được phép làm mất AP. Không nhấn `RS
 ROM download mode.
 
 Checklist nghiệm thu đầy đủ và các bài power-loss/TLS nằm trong
-`P2_2_P2_3_FULL_FLOW_TEST_GUIDE.md`.
+[FULL_SYSTEM_ACCEPTANCE_TEST.md](FULL_SYSTEM_ACCEPTANCE_TEST.md).
 
 ## Nguồn đối chiếu phần cứng
 
@@ -284,4 +284,4 @@ GND → GND, GPIO41/TX qua điện trở 1 kΩ → DFPlayer RX, GPIO42/RX ← DF
 loa nằm giữa SPK1 và SPK2. Không dùng GPIO19/20 hoặc cặp chân TX/RX của console.
 
 Toàn bộ mapping sáu file, chuẩn bị FAT32 trên Ubuntu, flash không xóa dữ liệu,
-portal volume/mute và fault test nằm trong P3_TEST_GUIDE.md.
+portal volume/mute và fault test nằm trong [P3_TEST_GUIDE.md](P3_TEST_GUIDE.md).

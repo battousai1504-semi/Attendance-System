@@ -1,8 +1,8 @@
 # Ghi lời chào theo danh sách lớp trên Ubuntu
 
-File Excel được cung cấp có 29 tên ở cột **HỌ VÀ TÊN** (sheet đầu, dòng 4–32).
-Tiêu đề của nó ghi lớp 4a2 và năm 2023–24; cần xác nhận đây đúng là lớp sẽ
-điểm danh hiện nay trước khi ghi âm. Cột **STT không phải Student ID của robot**.
+Với một danh sách lớp dạng Excel, trước tiên xác nhận tên và năm học còn hiệu
+lực. Cột **STT trong Excel không phải Student ID của robot**; mapping âm thanh
+luôn dựa trên ID do robot cấp sau khi đăng ký khuôn mặt.
 
 1. Đăng ký khuôn mặt và tên đúng dấu trên robot. Khi nối vào AP `RobotSetup`, mở
    `http://192.168.4.1/` để xem danh sách. Lưu JSON robot làm nguồn ID:
@@ -19,7 +19,7 @@ Tiêu đề của nó ghi lớp 4a2 và năm 2023–24; cần xác nhận đây 
 
    ```bash
    python3 tools/plan_audio_from_xlsx.py \
-     "$HOME/Downloads/DANH SACH GHI DIEM 23-24.xlsx" \
+     /duong-dan/danh-sach-lop.xlsx \
      audio-source/students.json > audio-source/recording-plan.csv
    ```
 

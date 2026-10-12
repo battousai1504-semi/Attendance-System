@@ -1,4 +1,4 @@
-# ADR 0002: Runtime configuration uses a validated NVS A/B store
+# ADR 0003: Runtime configuration uses a validated NVS A/B store
 
 - Status: Accepted
 - Date: 2026-09-22

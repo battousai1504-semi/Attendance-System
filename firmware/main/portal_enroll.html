@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang='vi'>
+<head>
+<meta charset='UTF-8'>
+<meta name='viewport' content='width=device-width,initial-scale=1'>
+<title>Đăng ký khuôn mặt</title>
+<style>
+body{margin:0;font-family:sans-serif;background:#0f172a;color:#e2e8f0;padding:16px}
+h1{color:#38bdf8;text-align:center}
+.card{background:#1e293b;border-radius:12px;padding:20px;max-width:440px;margin:16px auto}
+label{display:block;margin-bottom:4px;color:#94a3b8;font-size:.9em}
+input{width:100%;box-sizing:border-box;padding:10px;border:1px solid #334155;border-radius:8px;background:#0f172a;color:#e2e8f0;font-size:1em;margin-bottom:12px}
+button{width:100%;padding:12px;border:0;border-radius:8px;font-size:1em;cursor:pointer;margin-bottom:8px;color:#fff}
+button:disabled{opacity:.55}
+.enroll{background:#0ea5e9}
+.undo{background:#b45309}
+.done{background:#16a34a}
+.reset{background:#991b1b;margin-top:18px}
+.config{display:block;text-align:center;background:#475569;color:#fff;text-decoration:none;padding:12px;border-radius:8px;margin-bottom:16px}
+#progress{padding:10px;background:#0f172a;border-radius:8px;margin-bottom:14px}
+#students{max-height:190px;overflow:auto;padding-left:28px;color:#cbd5e1}
+#students li{padding:3px 0}
+#status{text-align:center;padding:10px;border-radius:8px;margin-top:8px;display:none}
+.ok{background:#14532d;color:#86efac}
+.err{background:#450a0a;color:#fca5a5}
+</style>
+</head>
+<body>
+<h1>🎓 Đăng ký học sinh</h1>
+<div class='card'>
+<a class='config' href='/config'>⚙ Cấu hình Wi-Fi và cloud</a>
+<div id='progress'>Đã đăng ký: <b id='count'>0</b> / <span id='capacity'>50</span>
+</div>
+<div id='dbwarning' class='err' style='display:none;margin-bottom:12px;padding:10px'>
+</div>
+<ol id='students'>
+</ol>
+<button class='config' type='button' onclick='downloadVoiceRoster()'>⬇ Tải danh sách ID làm lời chào</button>
+<p style='color:#94a3b8'>File này có tên học sinh; giữ riêng tư và không đưa lên Git.</p>
+<label>Họ tên học sinh</label>
+<input id='name' type='text' placeholder='Nguyễn Văn A' autocomplete='off'>
+<label>Lớp</label>
+<input id='cls' type='text' placeholder='Ví dụ: 4A2' autocomplete='off'>
+<button id='enrollBtn' class='enroll' onclick='doEnroll()'>📸 Chụp & Đăng ký</button>
+<button class='undo' onclick='undoLast()'>↩ Hoàn tác em cuối</button>
+<button class='done' onclick='doneSession()'>✅ Kết thúc buổi đăng ký</button>
+<button class='reset' onclick='resetIdentities()'>🗑 Xóa toàn bộ danh tính</button>
+<div id='status'>
+</div>
+</div>
+<script>
+function showStatus(message, ok) {
+  const element = document.getElementById('status');
+  element.textContent = message;
+  element.className = ok ? 'ok' : 'err';
+  element.style.display = 'block';
+}
+
+async function refreshStudents() {
+  try {
+    const response = await fetch('/students');
+    const data = await response.json();
+    if (!response.ok || !data.ok) throw new Error('Không đọc được danh sách học sinh');
+    document.getElementById('count').textContent = data.count;
+    document.getElementById('capacity').textContent = data.capacity;
+
+    const warning = document.getElementById('dbwarning');
+    if (!data.consistent) {
+      warning.textContent = 'Dữ liệu không đồng bộ: ' + data.face_count +
+        ' khuôn mặt, ' + data.count + ' học sinh. Hãy hoàn tác hoặc xóa toàn bộ danh tính.';
+      warning.style.display = 'block';
+    } else {
+      warning.style.display = 'none';
+    }
+
+    const list = document.getElementById('students');
+    list.textContent = '';
+    data.students.forEach((student) => {
+      const item = document.createElement('li');
+      item.textContent = 'ID ' + student.id + ': ' + student.name +
+        (student.class ? ' — ' + student.class : '');
+      list.appendChild(item);
+    });
+  } catch (error) {
+    showStatus('Không đọc được danh sách học sinh: ' + error.message, false);
+  }
+}
+
+async function downloadVoiceRoster() {
+  try {
+    const response = await fetch('/students');
+    const data = await response.json();
+    if (!response.ok || !data.ok || !data.consistent || !data.students.length) {
+      throw new Error('Danh sách chưa sẵn sàng');
+    }
+    const url = URL.createObjectURL(new Blob(
+      [JSON.stringify(data, null, 2)], {type: 'application/json'},
+    ));
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = 'student-voice-roster.json';
+    anchor.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    showStatus('Đã tải danh sách ID để chuẩn bị lời chào trên thẻ SD.', true);
+  } catch (error) {
+    showStatus('Không tải được danh sách ID: ' + error.message, false);
+  }
+}
+
+async function doEnroll() {
+  const nameInput = document.getElementById('name');
+  const name = nameInput.value.trim();
+  const className = document.getElementById('cls').value.trim();
+  const button = document.getElementById('enrollBtn');
+  if (!name) {
+    showStatus('Vui lòng nhập tên học sinh', false);
+    nameInput.focus();
+    return;
+  }
+
+  button.disabled = true;
+  showStatus('⏳ Đang chụp; chỉ để một khuôn mặt trước camera...', true);
+  try {
+    const response = await fetch('/enroll', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+      body: 'name=' + encodeURIComponent(name) +
+        '&class=' + encodeURIComponent(className),
+    });
+    const data = await response.json();
+    if (data.ok) {
+      showStatus('✅ Đã đăng ký ID ' + data.face_id + ': ' + name, true);
+      nameInput.value = '';
+      nameInput.focus();
+      await refreshStudents();
+    } else {
+      showStatus('❌ Lỗi: ' + data.error, false);
+    }
+  } catch (error) {
+    showStatus('❌ Lỗi kết nối với robot', false);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function undoLast() {
+  if (!confirm('Xóa học sinh vừa đăng ký cuối cùng?')) return;
+  try {
+    const data = await (await fetch('/undo', {method: 'POST'})).json();
+    showStatus(data.ok ? 'Đã xóa ID ' + data.removed_id : '❌ Lỗi: ' + data.error, data.ok);
+    await refreshStudents();
+  } catch (error) {
+    showStatus('❌ Lỗi kết nối với robot', false);
+  }
+}
+
+async function doneSession() {
+  if (!confirm('Đã đăng ký xong tất cả học sinh trong lớp?')) return;
+  try {
+    const data = await (await fetch('/done', {method: 'POST'})).json();
+    showStatus(data.ok
+      ? '🚀 Robot đang chuyển sang chế độ điểm danh...'
+      : '❌ Lỗi: ' + data.error, data.ok);
+  } catch (error) {
+    showStatus('❌ Lỗi kết nối với robot', false);
+  }
+}
+
+async function resetIdentities() {
+  const code = prompt('Thao tác này xóa toàn bộ khuôn mặt và danh sách học sinh. Nhập RESET để xác nhận:');
+  if (code !== 'RESET') return;
+  try {
+    const data = await (await fetch('/reset-identities', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+      body: 'confirm=RESET',
+    })).json();
+    showStatus(data.ok ? 'Đã xóa toàn bộ danh tính' : '❌ Lỗi: ' + data.error, data.ok);
+    await refreshStudents();
+  } catch (error) {
+    showStatus('❌ Lỗi kết nối với robot', false);
+  }
+}
+
+refreshStudents();
+document.getElementById('name').focus();
+</script>
+</body>
+</html>

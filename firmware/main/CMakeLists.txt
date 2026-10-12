@@ -30,7 +30,10 @@ idf_component_register(
         "http_upload.c"
         "enroll_server.c"
     INCLUDE_DIRS "."
-    EMBED_TXTFILES "${CDP_COMBINED_CA_BUNDLE}"
+    EMBED_TXTFILES
+        "${CDP_COMBINED_CA_BUNDLE}"
+        "portal_enroll.html"
+        "portal_config.html"
     REQUIRES
         esp32-camera
         esp_http_client

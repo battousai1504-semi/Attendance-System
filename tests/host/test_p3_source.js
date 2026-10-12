@@ -7,6 +7,8 @@ const pins = fs.readFileSync(path.join(root, 'firmware', 'main', 'board_pins.h')
 const app = fs.readFileSync(path.join(root, 'firmware', 'main', 'app_main.c'), 'utf8');
 const audio = fs.readFileSync(path.join(root, 'firmware', 'main', 'audio_feedback.c'), 'utf8');
 const portal = fs.readFileSync(path.join(root, 'firmware', 'main', 'enroll_server.c'), 'utf8');
+const enrollHtml = fs.readFileSync(path.join(root, 'firmware', 'main', 'portal_enroll.html'), 'utf8');
+const configHtml = fs.readFileSync(path.join(root, 'firmware', 'main', 'portal_config.html'), 'utf8');
 const cmake = fs.readFileSync(path.join(root, 'firmware', 'CMakeLists.txt'), 'utf8');
 
 const macro = (name) => {
@@ -47,8 +49,8 @@ assert.doesNotMatch(app, /ESP_ERROR_CHECK\(audio_feedback_init/);
 assert.match(portal, /"\/audio\/status"/);
 assert.match(portal, /"\/audio\/config"/);
 assert.match(portal, /"\/audio\/test"/);
-assert.match(portal, /downloadVoiceRoster/);
-assert.match(portal, /testStudentAudio/);
+assert.match(enrollHtml, /downloadVoiceRoster/);
+assert.match(configHtml, /testStudentAudio/);
 assert.match(portal, /AUDIO_EVENT_ENROLL_SUCCESS/);
 
 console.log('Phase 3 audio source tests: PASS');

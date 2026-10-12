@@ -102,8 +102,9 @@ Eject thẻ an toàn rồi mới cắm vào DFPlayer. Không hot-plug microSD kh
 
 Phase 3 không đổi partition, NVS hay face database. Không chạy erase-flash.
 
-Phase 3 không đổi schema Google Sheet hoặc Apps Script. Heartbeat hiện có tự báo
-firmware version mới lên dashboard.
+Riêng thay đổi âm thanh không yêu cầu đổi schema Google Sheet. Heartbeat hiện
+có tự báo firmware version mới lên dashboard; các nâng cấp backend khác (như
+email CSV) vẫn có hướng dẫn triển khai riêng.
 
     cd "$(git rev-parse --show-toplevel)/firmware"
     ls -l /dev/serial/by-id/
@@ -113,7 +114,7 @@ Thay port nếu symlink của board trỏ sang thiết bị khác. Marker mong �
 
     === Robot Điểm Danh 3.1.0-phase3-ux-dev ===
     Camera OK (VGA, PSRAM)
-    P3 audio ready: UART1 TX=GPIO41 RX=GPIO42 enabled=yes volume=18
+    P3 audio ready: UART1 TX=GPIO41 RX=GPIO42 enabled=yes volume=30
     DFPlayer responded on UART1
     === Bắt đầu vòng lặp điểm danh ===
     Playing /mp3/0001.mp3
@@ -127,7 +128,8 @@ thanh thực tế là phép kiểm tra cuối cùng.
 1. Khi robot đang chạy, giữ BOOT 2,5 giây; không giữ BOOT trong lúc nhấn RST.
 2. Kết nối Wi-Fi RobotSetup.
 3. Mở http://192.168.4.1/config.
-4. Ở phần Âm thanh DFPlayer, bật âm thanh, đặt volume 10 trước và bấm lưu.
+4. Ở phần Âm thanh DFPlayer, bật âm thanh rồi bấm lưu; bản này cố định volume
+   30/30, không còn ô chỉnh volume trên portal.
 5. Bấm “Phát thử câu điểm danh thành công”.
 6. Nhập Student ID 1 rồi bấm “Phát thử lời chào có tên”; nghe đúng câu trọn
    vẹn. Lặp lại với ID 2. Nếu nghe câu chung hoặc im lặng, kiểm tra file
@@ -180,7 +182,7 @@ recognize loop; không được reset loop hoặc rollback OTA.
 
 Nếu nghe rè, module reset hoặc ESP báo brownout:
 
-- hạ volume về 8–12;
+- ngừng thử ở volume 30/30; không thay nguồn/loa khi đang cấp điện;
 - rút nguồn trước khi kiểm tra lại GND chung;
 - thêm tụ 470–1000 µF sát DFPlayer;
 - dùng cáp USB nguồn tốt;
@@ -197,7 +199,7 @@ OTA health gate.
 - đủ sáu track đúng mapping;
 - mỗi Student ID nói đúng tên trong **một câu hoàn chỉnh**, không bị track
   duplicate cắt ngang; file thiếu chỉ là degraded fallback, không PASS;
-- volume/mute lưu qua reboot;
+- audio enabled/mute lưu qua reboot, volume mặc định 30/30;
 - hai học sinh điểm danh và upload đúng một lần;
 - duplicate không spam;
 - thiếu thẻ/module không ảnh hưởng chức năng cốt lõi;

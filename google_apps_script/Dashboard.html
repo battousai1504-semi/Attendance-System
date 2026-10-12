@@ -42,15 +42,24 @@
     .today-meta { margin-top:8px; }
     .session-heading { display:flex; justify-content:space-between; align-items:center; gap:12px; }
     .session-heading h2 { margin:0; }
-    .quick-form { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)) auto;
-      gap:10px; align-items:end; margin-top:12px; }
-    .quick-form button { white-space:nowrap; }
+    .quick-form { display:grid; grid-template-columns:repeat(2,minmax(0,1fr));
+      gap:16px; align-items:start; margin-top:18px; }
+    .quick-form > div { min-width:0; }
+    .quick-form label { color:var(--ink); }
+    .quick-form small { display:block; margin-top:5px; color:var(--muted); }
+    .quick-form .email-field { grid-column:1/-1; width:min(100%,640px); }
+    .quick-form .device-choice { grid-column:1/-1; }
+    .quick-form #start-session { grid-column:1/-1; justify-self:start;
+      min-width:230px; margin-top:2px; }
     .schedule-hint { grid-column:1/-1; margin:0; color:var(--muted); }
-    .quick-form .device-choice { min-width:180px; }
     .advanced-fields { grid-column:1/-1; margin:0; padding:0; }
     .advanced-fields .form-grid { margin-top:10px; }
     .secondary-panel { margin-top:16px; }
     .secondary-panel > summary { font-weight:700; }
+    #quick-start { border-color:#d5e1f2; }
+    #quick-start > summary { color:#12213f; font-size:18px; }
+    .quick-form input:focus-visible,.quick-form select:focus-visible {
+      outline:3px solid #bfd3ff; border-color:var(--brand); }
     .roster-heading { display:flex; align-items:end; gap:12px; flex-wrap:wrap; }
     .roster-heading h2 { flex:1; margin:0; }
     .roster-search { min-width:210px; }
@@ -100,7 +109,7 @@
       .toolbar,.form-grid,.quick-form { grid-template-columns:1fr; }
       .toolbar-actions { grid-column:1; }
       main { padding:12px; }
-      .quick-form button { width:100%; }
+      .quick-form #start-session { width:100%; }
       .roster-table,.roster-table tbody { display:block; min-width:0; }
       .roster-table thead,.roster-table td:nth-child(1),
       .roster-table td:nth-child(4),.roster-table td:nth-child(5) { display:none; }
@@ -147,13 +156,14 @@
       <div id="notice" class="notice" role="status" aria-live="polite"></div>
       <details id="quick-start" class="card secondary-panel">
         <summary id="quick-start-label">Bắt đầu buổi học mới</summary>
-        <p class="meta">Chọn lớp và buổi học. Giờ bắt đầu, kết thúc và mã buổi được điền tự động.</p>
+        <p class="meta">Nhập lớp, chọn buổi học và email nhận CSV. Giờ và mã buổi được điền tự động.</p>
         <form id="session-form" class="quick-form">
-          <div><label for="new-class">Lớp</label><select id="new-class" name="class_id" required><option value="">Chọn lớp</option></select></div>
+          <div><label for="new-class">Lớp</label><input id="new-class" name="class_id" type="text" list="class-suggestions" maxlength="32" required placeholder="Ví dụ: 3A hoặc 12A1" autocomplete="off"><datalist id="class-suggestions"></datalist><small>Có thể gõ trực tiếp hoặc chọn lớp đã có học sinh.</small></div>
           <div><label for="new-shift">Buổi học</label><select id="new-shift" name="period" required><option value="Sáng">Buổi sáng · 07:00–10:30</option><option value="Chiều">Buổi chiều · 14:00–16:30</option></select></div>
           <div id="device-choice" class="device-choice" hidden><label for="new-device">Máy điểm danh</label><select id="new-device" name="device_id"></select></div>
-          <button id="start-session" type="submit">Bắt đầu điểm danh</button>
+          <div class="email-field"><label for="new-email">Email nhận CSV cuối buổi</label><input id="new-email" name="report_email" type="email" maxlength="254" autocomplete="email" required placeholder="giaovien@example.com"><small>Kiểm tra kỹ email: báo cáo của lớp sẽ được gửi tới địa chỉ này.</small></div>
           <p id="schedule-hint" class="schedule-hint" role="status"></p>
+          <button id="start-session" type="submit">Bắt đầu điểm danh</button>
           <details id="session-advanced" class="advanced-fields">
             <summary>Tùy chọn nâng cao: đổi giờ, mốc đi muộn hoặc mã buổi</summary>
             <div class="form-grid">
@@ -180,6 +190,7 @@
           <button id="close-session" class="danger">Đóng buổi học</button>
         </div>
         <p id="session-meta" class="meta"></p>
+        <p id="report-meta" class="meta" role="status"></p>
         <table class="roster-table">
           <thead><tr><th>Mã</th><th>Họ tên</th><th>Trạng thái</th><th>Thời gian</th><th>Độ tin cậy</th><th>Điều chỉnh</th></tr></thead>
           <tbody id="student-rows"></tbody>
@@ -234,7 +245,7 @@
     };
     let state = {key:'', actor:'', data:null, cache:Object.create(null), loadToken:0,
       pending:false, stale:false, mutating:false, correction:null,
-      repeatCandidate:null, shiftTouched:false};
+      repeatCandidate:null, shiftTouched:false, emailTouched:false};
     const byId = (id) => document.getElementById(id);
 
     function vietnamDateParts(date) {
@@ -266,15 +277,20 @@
       const period = byId('new-shift').value;
       const hours = shiftHours[period];
       if (!hours) return;
-      if (byId('new-class').children.length <= 1) {
+      if (!state.data || !state.data.classes || state.data.classes.length === 0) {
         byId('schedule-hint').textContent =
-          'Chưa có lớp trong hệ thống. Nhờ người quản trị thêm danh sách học sinh.';
+          'Chưa có lớp nào có học sinh. Nhờ người quản trị thêm danh sách học sinh trước.';
         return;
       }
       const schedule = scheduleForShift(period, now);
       byId('start-session').textContent = now < schedule.start ?
         'Chuẩn bị buổi học' : 'Bắt đầu điểm danh';
-      const classId = byId('new-class').value;
+      const classId = byId('new-class').value.trim();
+      if (classId && !state.data.classes.includes(classId)) {
+        byId('schedule-hint').textContent =
+          `Lớp ${classId} chưa có học sinh trong danh sách. Nhờ người quản trị cập nhật rồi bấm Làm mới.`;
+        return;
+      }
       const today = vietnamDateParts(now).date;
       if (classId && state.data && state.data.sessions.some((item) =>
         item.class_id === classId && item.period === period &&
@@ -307,6 +323,8 @@
         session_exists:'Buổi học này đã được tạo. Hãy làm mới và kiểm tra lịch sử.',
         invalid_session_time:'Giờ bắt đầu, đi muộn hoặc kết thúc chưa hợp lệ.',
         invalid_session_fields:'Mã buổi hoặc mã máy có ký tự không hợp lệ.',
+        class_without_students:'Lớp này chưa có học sinh đang hoạt động. Nhờ người quản trị cập nhật danh sách học sinh rồi thử lại.',
+        invalid_report_email:'Email nhận báo cáo không hợp lệ. Chỉ nhập một địa chỉ email.',
         invalid_status:'Trạng thái điểm danh không hợp lệ.',
         dashboard_unauthorized:'Phiên đăng nhập không hợp lệ. Vui lòng đăng nhập lại.',
         dashboard_login_failed:'Tài khoản hoặc mật khẩu không đúng.',
@@ -336,10 +354,11 @@
       byId('repeat-session').disabled = blocked || !state.repeatCandidate;
       byId('view-active').disabled = blocked;
       byId('close-session').disabled = blocked || !selected || selected.status !== 'ACTIVE';
-      const classId = byId('new-class').value;
+      const classId = byId('new-class').value.trim();
+      const hasRoster = state.data && (state.data.classes || []).includes(classId);
       const device = state.data && (state.data.devices || []).find((item) =>
         item.device_id === byId('new-device').value);
-      byId('start-session').disabled = blocked || !classId || !device ||
+      byId('start-session').disabled = blocked || !hasRoster || !device ||
         device.status !== 'ONLINE';
       byId('student-rows').querySelectorAll('select,button').forEach((control) => {
         control.disabled = blocked;
@@ -415,12 +434,11 @@
         classFilter.appendChild(new Option(classId,classId));
       });
       classFilter.value = previousClass;
-      const classSelect = byId('new-class');
-      const previousNewClass = classSelect.value;
-      classSelect.replaceChildren(new Option('Chọn lớp',''));
-      configuredClassIds.forEach((classId) => classSelect.appendChild(new Option(classId,classId)));
-      classSelect.value = configuredClassIds.includes(previousNewClass) ? previousNewClass :
-        (configuredClassIds.length === 1 ? configuredClassIds[0] : '');
+      const suggestions = byId('class-suggestions');
+      suggestions.replaceChildren();
+      configuredClassIds.forEach((classId) =>
+        suggestions.appendChild(new Option(classId,classId)));
+      suggestReportEmail();
       const devices = Array.isArray(data.devices) ? data.devices : [];
       const deviceSelect = byId('new-device');
       const previousDevice = deviceSelect.value;
@@ -473,9 +491,9 @@
           vietnamDateParts(new Date(other.starts_at)).date === todayInVietnam));
       const recentDevice = recent && devices.find((item) => item.device_id === recent.device_id);
       state.repeatCandidate = !active && recent && recentDevice &&
-        recentDevice.status === 'ONLINE' ?
+        recentDevice.status === 'ONLINE' && recent.report_email ?
         {class_id:recent.class_id, period:recent.period, device_id:recent.device_id,
-          late_minutes:'10'} : null;
+          report_email:recent.report_email, late_minutes:'10'} : null;
       const repeat = byId('repeat-session');
       repeat.hidden = !state.repeatCandidate;
       if (state.repeatCandidate) {
@@ -484,7 +502,7 @@
           `${new Date() < currentShift.start ? 'Chuẩn bị' : 'Bắt đầu'} ` +
           `${recent.period.toLowerCase()} · lớp ${recent.class_id}`;
         byId('repeat-hint').textContent =
-          `Giờ ${hours.start}–${hours.end}. Kiểm tra đúng lớp trước khi bấm.`;
+          `Giờ ${hours.start}–${hours.end}. CSV sẽ gửi tới ${recent.report_email}. Kiểm tra đúng lớp và email trước khi bấm.`;
       }
       byId('repeat-hint').hidden = !state.repeatCandidate;
       const deviceId = active ? active.device_id :
@@ -507,6 +525,11 @@
       byId('session-meta').textContent = selected ?
         `${selected.class_id} · ${selected.period} · ${new Date(selected.starts_at).toLocaleString('vi-VN',{timeZone:schoolTimeZone})} → ${new Date(selected.ends_at).toLocaleString('vi-VN',{timeZone:schoolTimeZone})} · Mã buổi: ${selected.session_id}` :
         'Chưa có buổi học. Mở “Bắt đầu buổi học mới” ở phía trên.';
+      byId('report-meta').textContent = selected ?
+        (!selected.report_email ? 'Buổi cũ chưa đăng ký email báo cáo.' :
+          `CSV gửi tới ${selected.report_email}: ` + ({SENT:'đã gửi',PENDING:'đang chờ gửi',
+            SENDING:'đang xử lý',FAILED:'gửi lỗi, hệ thống sẽ thử lại'}[selected.report_status] ||
+            (selected.status === 'ACTIVE' ? 'sẽ gửi khi kết thúc buổi' : 'chưa gửi'))) : '';
       if (!active && !state.repeatCandidate) byId('quick-start').open = true;
       byId('close-session').disabled = !selected || selected.status !== 'ACTIVE';
       renderDevices();
@@ -539,6 +562,13 @@
         .replace(/đ/g,'d').replace(/Đ/g,'D')
         .replace(/[^A-Za-z0-9._:-]+/g,'-').replace(/^-+|-+$/g,'') || 'BUOI';
     }
+    function suggestReportEmail() {
+      if (state.emailTouched || !state.data) return;
+      const classId = byId('new-class').value.trim();
+      const recent = state.data.sessions.find((item) =>
+        item.class_id === classId && item.report_email);
+      byId('new-email').value = recent ? recent.report_email : '';
+    }
     function generatedSessionId(classId, period, start) {
       const pad = (number) => String(number).padStart(2,'0');
       const local = vietnamDateParts(start);
@@ -555,14 +585,18 @@
       const classId = String(values.class_id || '').trim();
       const period = String(values.period || '').trim();
       const deviceId = String(values.device_id || '').trim();
+      const reportEmail = String(values.report_email || '').trim();
       const lateMinutes = Number(values.late_minutes == null ||
         values.late_minutes === '' ? 10 : values.late_minutes);
-      if (!classId) throw new Error('Hãy chọn lớp.');
+      if (!classId) throw new Error('Hãy nhập lớp.');
       if (!shiftHours[period]) throw new Error('Hãy chọn Buổi sáng hoặc Buổi chiều.');
       if (!deviceId) throw new Error('Chưa có máy điểm danh. Nhờ người quản trị kiểm tra.');
+      if (!/^[^\s@,;<>]+@[^\s@,;<>]+\.[^\s@,;<>]+$/.test(reportEmail)) {
+        throw new Error('Hãy nhập một email hợp lệ để nhận CSV cuối buổi.');
+      }
       if (state.data && Array.isArray(state.data.classes) &&
           !state.data.classes.includes(classId)) {
-        throw new Error('Lớp này không còn trong danh sách hiện tại. Hãy làm mới.');
+        throw new Error(`Lớp ${classId} chưa có học sinh đang hoạt động. Kiểm tra danh sách học sinh rồi làm mới.`);
       }
       if (state.data && Array.isArray(state.data.devices) &&
           !state.data.devices.some((device) =>
@@ -595,7 +629,7 @@
       return {
         session_id:String(values.session_id || '').trim() ||
           generatedSessionId(classId, period, startsAt),
-        class_id:classId, period, device_id:deviceId,
+        class_id:classId, period, device_id:deviceId, report_email:reportEmail,
         starts_at:startsAt.toISOString(), late_after:lateAfter.toISOString(),
         ends_at:endsAt.toISOString(), actor:state.actor,
       };
@@ -770,9 +804,11 @@
     byId('class-filter').onchange = applySessionFilters;
     byId('date-filter').onchange = applySessionFilters;
     byId('student-filter').oninput = renderRows;
-    byId('new-class').onchange = () => {
+    byId('new-class').oninput = () => {
+      suggestReportEmail();
       updateScheduleHint(); setDashboardPending(state.pending);
     };
+    byId('new-email').oninput = () => { state.emailTouched=true; };
     byId('new-device').onchange = () => setDashboardPending(state.pending);
     byId('new-shift').onchange = () => {
       state.shiftTouched=true; updateScheduleHint();
@@ -802,7 +838,9 @@
       google.script.run.withSuccessHandler((data) => {
         if (sessionToken !== state.key) return;
         renderMutation(data); button.textContent='Đóng buổi học';
-        showNotice('Đã đóng buổi học.','ok');
+        showNotice(data.selected_session.report_email ?
+          'Đã đóng buổi học. CSV đang chờ gửi qua email.' :
+          'Đã đóng buổi học. Buổi cũ này chưa có email nhận CSV.','ok');
       }).withFailureHandler((error) => {
         if (sessionToken !== state.key) return;
         button.textContent='Đóng buổi học'; setMutating(false); fail(error);
@@ -820,7 +858,8 @@
       google.script.run.withSuccessHandler((data) => {
         if (sessionToken !== state.key) return;
         byId('class-filter').value=''; byId('date-filter').value='';
-        if (resetForm) { byId('session-form').reset(); state.shiftTouched=false; }
+        if (resetForm) { byId('session-form').reset(); state.shiftTouched=false;
+          state.emailTouched=false; }
         renderMutation(data);
         byId('quick-start').open=false;
         showNotice(startsLater ?
