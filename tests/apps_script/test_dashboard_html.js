@@ -26,6 +26,10 @@ assert.match(html, /Xuất CSV/);
 assert.match(html, /Bắt đầu buổi học mới/);
 assert.match(html, /id="today-summary"/);
 assert.match(html, /id="repeat-session"/);
+assert.match(html, /id="new-email"[^>]+type="email"[^>]+required/);
+assert.match(html, /id="new-class"[^>]+type="text"[^>]+list="class-suggestions"/);
+assert.doesNotMatch(html, /<select id="new-class"/);
+assert.match(html, /\.quick-form \.email-field \{ grid-column:1\/-1/);
 assert.match(html, /id="device-readiness"/);
 assert.match(html, /buildQuickSessionInput/);
 assert.match(html, /Tùy chọn nâng cao: đổi giờ, mốc đi muộn hoặc mã buổi/);
@@ -145,9 +149,13 @@ assert.strictEqual(element('session').children[0].textContent.includes('12A1 · 
 assert.strictEqual(element('today-title').textContent, 'Buổi học đang diễn ra');
 assert.strictEqual(element('repeat-session').hidden, true);
 assert.match(element('device-readiness').textContent, /robot-01: Online/);
-assert.strictEqual(element('new-class').value, '12A1');
+assert.strictEqual(element('class-suggestions').children[0].value, '12A1');
+assert.strictEqual(element('new-class').value, '');
 assert.strictEqual(element('new-shift').value, 'Sáng');
 assert.match(element('schedule-hint').textContent, /07:00–10:30/);
+assert.strictEqual(element('start-session').disabled, true);
+element('new-class').value = '12A1';
+element('new-class').oninput();
 assert.strictEqual(element('start-session').disabled, false);
 
 browser.futureDashboard = {
@@ -181,7 +189,7 @@ const end = new Date(yesterday.getTime() + 210 * 60000);
 const closed = {
   session_id: 'RECENT', class_id: '12A1', period: 'Sáng', status: 'CLOSED',
   device_id: 'robot-01', starts_at: yesterday.toISOString(),
-  ends_at: end.toISOString(),
+  ends_at: end.toISOString(), report_email: 'teacher@example.com',
 };
 browser.closedDashboard = {
   sessions: [closed], selected_session: closed,
@@ -192,6 +200,8 @@ browser.closedDashboard = {
 };
 vm.runInContext('render(closedDashboard);', browser);
 assert.strictEqual(element('repeat-session').hidden, false);
+assert.strictEqual(element('new-email').value, 'teacher@example.com');
+assert.match(element('repeat-hint').textContent, /teacher@example.com/);
 assert.match(element('repeat-session').textContent, /sáng · lớp 12A1/);
 assert.match(element('unassigned-warning').textContent, /2 lượt/);
 browser.closedDashboard.devices[0].status = 'OFFLINE';
@@ -203,11 +213,24 @@ vm.runInContext('render(closedDashboard);', browser);
 assert.strictEqual(element('start-session').disabled, false);
 browser.closedDashboard.classes = [];
 vm.runInContext('render(closedDashboard);', browser);
-assert.strictEqual(element('new-class').value, '');
+assert.strictEqual(element('new-class').value, '12A1');
 assert.strictEqual(element('start-session').disabled, true);
 assert.match(element('schedule-hint').textContent, /Chưa có lớp/);
 browser.closedDashboard.classes = ['12A1'];
 vm.runInContext('render(closedDashboard);', browser);
+browser.closedDashboard.classes = ['12A1', '3A'];
+vm.runInContext('render(closedDashboard);', browser);
+assert.strictEqual(element('class-suggestions').children.length, 2);
+element('new-class').value = '3A';
+element('new-class').oninput();
+assert.strictEqual(element('start-session').disabled, false);
+element('new-class').value = '99Z';
+element('new-class').oninput();
+assert.strictEqual(element('start-session').disabled, true);
+assert.match(element('schedule-hint').textContent, /chưa có học sinh/);
+element('new-class').value = '12A1';
+element('new-class').oninput();
+browser.closedDashboard.classes = ['12A1'];
 browser.closedDashboard.sessions.unshift({
   session_id:'TODAY-MORNING', class_id:'12A1', period:'Sáng', status:'CLOSED',
   device_id:'robot-01', starts_at:'2026-10-08T00:00:00Z',
@@ -224,6 +247,7 @@ assert.strictEqual(calls.length, 1);
 assert.strictEqual(calls[0].values.class_id, '12A1');
 assert.strictEqual(calls[0].values.period, 'Sáng');
 assert.strictEqual(calls[0].values.device_id, 'robot-01');
+assert.strictEqual(calls[0].values.report_email, 'teacher@example.com');
 assert.strictEqual(calls[0].values.actor, 'Teacher A');
 assert.strictEqual(Date.parse(calls[0].values.ends_at) -
   Date.parse(calls[0].values.starts_at), 210 * 60000);
@@ -262,12 +286,14 @@ assert.strictEqual(vm.runInContext('state.pending', browser), false);
 const quickInput = JSON.parse(vm.runInContext(
   "JSON.stringify(buildQuickSessionInput({class_id:'12A1',period:'Sáng'," +
   "device_id:'robot-01',late_minutes:'10'," +
+  "report_email:'teacher@example.com'," +
   "starts_at:'2026-10-01T07:00',ends_at:'',session_id:''}," +
   "new Date('2026-10-01T00:05:00Z'))) ",
   browser,
 ));
 assert.match(quickInput.session_id, /^20261001-12A1-Sang-0700/);
 assert.strictEqual(quickInput.actor, '');
+assert.strictEqual(quickInput.report_email, 'teacher@example.com');
 assert.strictEqual(
   Date.parse(quickInput.ends_at) - Date.parse(quickInput.starts_at), 210 * 60000);
 assert.strictEqual(quickInput.starts_at, '2026-10-01T00:00:00.000Z');
@@ -276,7 +302,8 @@ assert.strictEqual(
   Date.parse(quickInput.late_after) - Date.parse(quickInput.starts_at), 10 * 60000);
 const afternoonInput = JSON.parse(vm.runInContext(
   "JSON.stringify(buildQuickSessionInput({class_id:'12A1',period:'Chiều'," +
-  "device_id:'robot-01',late_minutes:'10'}," +
+  "device_id:'robot-01',late_minutes:'10'," +
+  "report_email:'teacher@example.com'}," +
   "new Date('2026-10-01T07:10:00Z'))) ", browser,
 ));
 assert.strictEqual(afternoonInput.starts_at, '2026-10-01T07:00:00.000Z');
@@ -292,20 +319,28 @@ assert.throws(() => vm.runInContext(
 ), /Chưa có máy điểm danh/);
 assert.throws(() => vm.runInContext(
   "buildQuickSessionInput({class_id:'12A1',period:'Sáng'," +
-  "device_id:'robot-01',late_minutes:'10'},new Date('2026-10-01T03:31:00Z'))", browser,
+  "device_id:'robot-01',report_email:'teacher@example.com'," +
+  "late_minutes:'10'},new Date('2026-10-01T03:31:00Z'))", browser,
 ), /đã qua giờ kết thúc/);
 vm.runInContext("state.data={sessions:[{class_id:'12A1',period:'Sáng'," +
   "starts_at:'2026-10-01T00:00:00Z'}]};", browser);
 assert.throws(() => vm.runInContext(
   "buildQuickSessionInput({class_id:'12A1',period:'Sáng'," +
-  "device_id:'robot-01',late_minutes:'10'},new Date('2026-10-01T00:05:00Z'))", browser,
+  "device_id:'robot-01',report_email:'teacher@example.com'," +
+  "late_minutes:'10'},new Date('2026-10-01T00:05:00Z'))", browser,
 ), /đã có buổi sáng ngày này/);
 vm.runInContext("state.data={sessions:[],classes:['12A1']," +
   "devices:[{device_id:'robot-01',status:'OFFLINE'}]};", browser);
 assert.throws(() => vm.runInContext(
   "buildQuickSessionInput({class_id:'12A1',period:'Sáng'," +
-  "device_id:'robot-01',late_minutes:'10'},new Date('2026-10-01T00:05:00Z'))", browser,
+  "device_id:'robot-01',report_email:'teacher@example.com'," +
+  "late_minutes:'10'},new Date('2026-10-01T00:05:00Z'))", browser,
 ), /chưa trực tuyến/);
+assert.throws(() => vm.runInContext(
+  "buildQuickSessionInput({class_id:'12A1',period:'Sáng'," +
+  "device_id:'robot-01',report_email:'wrong-address'}," +
+  "new Date('2026-10-01T00:05:00Z'))", browser,
+), /email hợp lệ/);
 
 // A previously loaded closed session appears immediately, but writes/export
 // remain disabled until the revalidation request completes.

@@ -4,6 +4,7 @@ const LEGACY_API_VERSION = 'phase1-v2';
 const SCHEMA_VERSION = '2';
 const ATTENDANCE_STATUSES = ['PRESENT', 'LATE', 'ABSENT', 'EXCUSED'];
 const DEVICE_OFFLINE_AFTER_SECONDS = 180;
+const REPORT_BATCH_SIZE = 1;
 const HEADERS = [
   'Received At',
   'Event ID',
@@ -27,7 +28,9 @@ const V2_SCHEMAS = {
   ],
   Sessions: [
     'Session ID', 'Class ID', 'Date', 'Period', 'Starts At', 'Late After',
-    'Ends At', 'Status', 'Device ID', 'Created At',
+    'Ends At', 'Status', 'Device ID', 'Created At', 'Report Email',
+    'Report Status', 'Report Sent At', 'Report Error', 'Report Attempts',
+    'Report Next Retry At',
   ],
   Devices: [
     'Device ID', 'Enabled', 'Secret Hash', 'Last Seen', 'Firmware Version',
@@ -109,7 +112,8 @@ function planV2Sheet(spreadsheet, sheetName, expectedHeaders) {
   const lastColumn = sheet.getLastColumn();
   const actual = sheet.getRange(1, 1, 1, lastColumn).getValues()[0];
   const allowedPrefixLengths = sheetName === SHEET_NAME ? [HEADERS.length] :
-    (sheetName === 'Devices' ? [12, 13] : []);
+    (sheetName === 'Devices' ? [12, 13] :
+      (sheetName === 'Sessions' ? [10] : []));
   const allowedPrefixLength = allowedPrefixLengths.find((length) => {
     return lastColumn === length && expectedHeaders.slice(0, length)
       .every((header, index) => actual[index] === header);
@@ -693,7 +697,123 @@ function serializeSession(row) {
     ends_at: cellDateIso(row[6]),
     status: String(row[7] || ''),
     device_id: String(row[8] || ''),
+    report_email: String(row[10] || ''),
+    report_status: String(row[11] || ''),
+    report_sent_at: cellDateIso(row[12]),
   };
+}
+
+function validReportEmail(value) {
+  const email = String(value == null ? '' : value).trim();
+  return email.length <= 254 &&
+    /^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+$/.test(email);
+}
+
+const REPORT_LABELS = {
+  PRESENT: 'Có mặt', LATE: 'Đi muộn', ABSENT: 'Vắng', EXCUSED: 'Có phép',
+};
+
+function reportCsvCell(value) {
+  const text = String(value == null ? '' : value);
+  const safe = /^\s*[=+@-]/.test(text) ? "'" + text : text;
+  return '"' + safe.replace(/"/g, '""') + '"';
+}
+
+function sessionReportCsv(data) {
+  const sessionId = data.selected_session.session_id;
+  const rows = [['Session ID', 'Student ID', 'Name', 'Class', 'Status', 'Reason',
+    'Timestamp', 'Event ID', 'Confidence']];
+  data.students.forEach((student) => rows.push([
+    sessionId, student.student_id, student.name, student.class_id,
+    REPORT_LABELS[student.status],
+    student.override ? student.override.reason || '' : '',
+    student.timestamp, student.event_id,
+    student.confidence_milli == null ? '' : student.confidence_milli,
+  ]));
+  return '\ufeff' + rows.map((row) => row.map(reportCsvCell).join(','))
+    .join('\r\n');
+}
+
+/** Sends at most one report per run. SENDING is deliberately not auto-retried:
+ * a crash after MailApp accepts a message cannot prove whether it was sent. */
+function sendClosedSessionReports() {
+  requireV2Schema();
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(30000)) throw new Error('busy');
+  try {
+    const spreadsheet = getConfiguredSpreadsheet();
+    const sheet = spreadsheet.getSheetByName('Sessions');
+    const rows = allDataRows(sheet, V2_SCHEMAS.Sessions.length);
+    const now = new Date();
+    let processed = 0;
+    rows.forEach((row, index) => {
+      if (processed >= REPORT_BATCH_SIZE || String(row[7]) !== 'CLOSED' ||
+          !validReportEmail(row[10])) return;
+      const status = String(row[11] || '');
+      const nextRetry = asDate(row[15]);
+      if (!['PENDING', 'FAILED'].includes(status) ||
+          (status === 'FAILED' && nextRetry && nextRetry > now)) return;
+      processed++;
+      const rowNumber = index + 2;
+      const sessionId = canonicalSessionId(row[0]);
+      const attempts = Number(row[14] || 0) + 1;
+      sheet.getRange(rowNumber, 12, 1, 5)
+        .setValues([['SENDING', row[12] || '', '', attempts, '']]);
+      SpreadsheetApp.flush();
+      let mailAccepted = false;
+      try {
+        if (MailApp.getRemainingDailyQuota() < 1) {
+          throw new Error('Email quota exhausted');
+        }
+        const data = buildDashboardData(spreadsheet, {session_id: sessionId});
+        if (!data.selected_session || data.selected_session.session_id !== sessionId) {
+          throw new Error('Session report not found');
+        }
+        const filename = sessionId + '.csv';
+        const blob = Utilities.newBlob(sessionReportCsv(data),
+          'text/csv; charset=utf-8', filename);
+        const classId = String(row[1] || '').replace(/[\r\n]/g, ' ');
+        const period = String(row[3] || '').replace(/[\r\n]/g, ' ');
+        const schoolDate = Utilities.formatDate(asDate(row[4]),
+          'Asia/Ho_Chi_Minh', 'yyyy-MM-dd');
+        MailApp.sendEmail({
+          to: String(row[10]),
+          subject: 'Điểm danh ' + classId + ' - ' + period + ' - ' +
+            schoolDate,
+          body: 'Buổi học ' + sessionId + ' đã kết thúc. ' +
+            'File CSV điểm danh được đính kèm.\n\n' +
+            'Nếu có điều chỉnh sau khi email này được gửi, hãy xuất lại CSV ' +
+            'trên dashboard để lấy bản mới nhất.',
+          attachments: [blob],
+          name: 'Hệ thống điểm danh',
+        });
+        mailAccepted = true;
+        sheet.getRange(rowNumber, 12, 1, 5)
+          .setValues([['SENT', new Date(), '', attempts, '']]);
+        appendAuditRow(spreadsheet.getSheetByName('AuditLog'), [
+          new Date(), 'SYSTEM', 'SESSION_REPORT_SENT', 'SESSION',
+          safeSheetText(sessionId), '{}', JSON.stringify({to: row[10]}),
+          'CSV emailed after session close',
+        ]);
+      } catch (error) {
+        if (mailAccepted) {
+          console.error('Email accepted but report status is uncertain for ' + sessionId);
+          throw error;
+        }
+        const delayMinutes = Math.min(360, 5 * Math.pow(2, Math.min(attempts - 1, 7)));
+        const retryAt = new Date(Date.now() + delayMinutes * 60000);
+        sheet.getRange(rowNumber, 12, 1, 5).setValues([[
+          'FAILED', row[12] || '', String(error.message || error).slice(0, 200),
+          attempts, retryAt,
+        ]]);
+        console.error('Report email failed for ' + sessionId + ': ' + error);
+      }
+      SpreadsheetApp.flush();
+    });
+    return {ok: true, processed_count: processed};
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 function allDataRows(sheet, width) {
@@ -758,6 +878,9 @@ function closeExpiredSessionsInSpreadsheet(spreadsheet, now, actor) {
     if (!endsAt || endsAt.getTime() > now.getTime()) return;
     const sessionId = canonicalSessionId(row[0]);
     sheet.getRange(index + 2, 8).setValue('CLOSED');
+    if (validReportEmail(row[10]) && !row[11]) {
+      sheet.getRange(index + 2, 12).setValue('PENDING');
+    }
     appendAuditRow(auditSheet, [
       now, safeSheetText(actor || 'SYSTEM'), 'SESSION_STATUS_CHANGE', 'SESSION',
       safeSheetText(sessionId), JSON.stringify({status: 'ACTIVE'}),
@@ -812,16 +935,20 @@ function ensureTimeTrigger(handler, minutes) {
   }
 }
 
-/** Installs one session-close trigger and one device-health trigger. */
+/** Installs session-close, device-health and queued email-report triggers. */
 function installPhase2Automation() {
   requireV2Schema();
+  // Force mail authorization while an administrator is present, not in a trigger.
+  MailApp.getRemainingDailyQuota();
   ensureTimeTrigger('closeExpiredSessions', 5);
   ensureTimeTrigger('refreshDeviceStatuses', 1);
+  ensureTimeTrigger('sendClosedSessionReports', 1);
   return {
     ok: true,
     triggers: [
       {handler: 'closeExpiredSessions', interval_minutes: 5},
       {handler: 'refreshDeviceStatuses', interval_minutes: 1},
+      {handler: 'sendClosedSessionReports', interval_minutes: 1},
     ],
   };
 }
@@ -851,19 +978,21 @@ function latestOverrides(spreadsheet, sessionId) {
   return overrides;
 }
 
+function availableRosterClasses(spreadsheet) {
+  const disabled = new Set(allDataRows(
+    spreadsheet.getSheetByName('Classes'), V2_SCHEMAS.Classes.length,
+  ).filter((row) => !enabledValue(row[2]))
+    .map((row) => String(row[0] || '').trim()));
+  return [...new Set(allDataRows(
+    spreadsheet.getSheetByName('Students'), V2_SCHEMAS.Students.length,
+  ).filter((row) => enabledValue(row[3]))
+    .map((row) => String(row[2] || '').trim())
+    .filter((classId) => classId && !disabled.has(classId)))].sort();
+}
+
 function buildDashboardData(spreadsheet, filters) {
   const devices = serializeDevices(spreadsheet, new Date());
-  const configuredClasses = allDataRows(
-    spreadsheet.getSheetByName('Classes'), V2_SCHEMAS.Classes.length,
-  ).filter((row) => enabledValue(row[2]))
-    .map((row) => String(row[0] || ''))
-    .filter((classId) => classId !== '');
-  const classes = configuredClasses.length > 0 ? configuredClasses :
-    [...new Set(allDataRows(
-      spreadsheet.getSheetByName('Students'), V2_SCHEMAS.Students.length,
-    ).filter((row) => enabledValue(row[3]))
-      .map((row) => String(row[2] || ''))
-      .filter((classId) => classId !== ''))].sort();
+  const classes = availableRosterClasses(spreadsheet);
   const sessionRows = allDataRows(
     spreadsheet.getSheetByName('Sessions'), V2_SCHEMAS.Sessions.length,
   );
@@ -1020,6 +1149,8 @@ function createClassSession(accessKey, input) {
   const classId = requiredText(input || {}, 'class_id', 32);
   const period = requiredText(input || {}, 'period', 24);
   const deviceId = requiredText(input || {}, 'device_id', 40);
+  const reportEmail = requiredText(input || {}, 'report_email', 254);
+  if (!validReportEmail(reportEmail)) throw new Error('invalid_report_email');
   if (!/^[A-Za-z0-9._:-]+$/.test(sessionId) ||
       !/^[A-Za-z0-9._:-]+$/.test(deviceId)) throw new Error('invalid_session_fields');
   const startsAt = asDate(input.starts_at);
@@ -1033,6 +1164,9 @@ function createClassSession(accessKey, input) {
   if (!lock.tryLock(10000)) throw new Error('busy');
   try {
     const spreadsheet = getConfiguredSpreadsheet();
+    if (!availableRosterClasses(spreadsheet).includes(classId)) {
+      throw new Error('class_without_students');
+    }
     const sessionsSheet = spreadsheet.getSheetByName('Sessions');
     closeExpiredSessionsInSpreadsheet(spreadsheet, new Date(), 'SYSTEM');
     if (findSessionRow(sessionsSheet, sessionId)) throw new Error('session_exists');
@@ -1046,6 +1180,7 @@ function createClassSession(accessKey, input) {
       Utilities.formatDate(startsAt, 'Asia/Ho_Chi_Minh', 'yyyy-MM-dd'),
       safeSheetText(period), startsAt,
       lateAfter, endsAt, 'ACTIVE', safeSheetText(deviceId), now,
+      reportEmail, '', '', '', 0, '',
     ]);
     appendAuditRow(spreadsheet.getSheetByName('AuditLog'), [
       now, safeSheetText(actor), 'SESSION_CREATE', 'SESSION',
@@ -1055,6 +1190,7 @@ function createClassSession(accessKey, input) {
         starts_at: startsAt.toISOString(),
         late_after: lateAfter.toISOString(),
         ends_at: endsAt.toISOString(),
+        report_email: reportEmail,
       }), 'Created from teacher dashboard',
     ]);
     SpreadsheetApp.flush();
@@ -1085,6 +1221,10 @@ function updateClassSessionStatus(accessKey, input) {
       throw new Error('session_not_active');
     }
     if (previous !== status) sheet.getRange(rowNumber, 8).setValue(status);
+    if (previous !== status && status === 'CLOSED' &&
+        validReportEmail(row[10]) && !row[11]) {
+      sheet.getRange(rowNumber, 12).setValue('PENDING');
+    }
     if (previous !== status) {
       appendAuditRow(spreadsheet.getSheetByName('AuditLog'), [
         new Date(), safeSheetText(actor), 'SESSION_STATUS_CHANGE', 'SESSION',

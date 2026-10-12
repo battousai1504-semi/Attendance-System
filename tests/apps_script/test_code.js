@@ -6,6 +6,8 @@ const vm = require('vm');
 
 let flushCount = 0;
 let lockAvailable = true;
+let mailFailure = false;
+const sentMail = [];
 const scriptProperties = {};
 const cached = new Map();
 
@@ -158,6 +160,13 @@ const context = {
     },
   },
   ScriptApp,
+  MailApp: {
+    getRemainingDailyQuota() { return 100; },
+    sendEmail(message) {
+      if (mailFailure) throw new Error('Temporary mail failure');
+      sentMail.push(message);
+    },
+  },
   HtmlService: {
     createHtmlOutputFromFile(name) {
       return {
@@ -211,6 +220,7 @@ const context = {
     },
   },
   Utilities: {
+    newBlob(body, contentType, name) { return {body, contentType, name}; },
     getUuid() { return crypto.randomUUID(); },
     DigestAlgorithm: {SHA_256: 'sha256'},
     Charset: {UTF_8: 'utf8'},
@@ -285,6 +295,7 @@ assert.deepStrictEqual(Object.keys(sheets), [
 ]);
 assert.strictEqual(sheets.Attendance.rows[0].length, 12);
 assert.strictEqual(sheets.Devices.rows[0].length, 16);
+assert.strictEqual(sheets.Sessions.rows[0].length, 16);
 assert.strictEqual(JSON.parse(context.doGet().text).configured, true);
 
 assert.strictEqual(post({...validPayload, token: 'wrong-token-that-is-long-enough-000'}).error,
@@ -521,12 +532,13 @@ assert.ok(flushCount > flushBeforeAutoClose);
 assert.strictEqual(sheets.AuditLog.rows.at(-1)[7], 'Automatically closed at Ends At');
 assert.strictEqual(context.installPhase2Automation().ok, true);
 assert.strictEqual(context.installPhase2Automation().ok, true);
-assert.strictEqual(projectTriggers.length, 2);
+assert.strictEqual(projectTriggers.length, 3);
 assert.deepStrictEqual(
   projectTriggers.map((trigger) => [
     trigger.getHandlerFunction(), trigger.minutes,
   ]).sort(),
-  [['closeExpiredSessions', 5], ['refreshDeviceStatuses', 1]],
+  [['closeExpiredSessions', 5], ['refreshDeviceStatuses', 1],
+    ['sendClosedSessionReports', 1]],
 );
 
 const flushBeforeReadOnlyDashboard = flushCount;
@@ -562,9 +574,35 @@ assert.strictEqual(correctedDashboard.summary.absent, 0);
 assert.strictEqual(correctedDashboard.summary.excused, 1);
 assert.strictEqual(sheets.AuditLog.rows.at(-1)[2], 'ATTENDANCE_OVERRIDE');
 
+// Text-entered classes work when active students exist, even without a row
+// in Classes. A disabled or unknown class must not create an empty session.
+sheets.Students.appendRow([4, 'Student 3A', '3A', true, new Date(), new Date()]);
+assert.deepStrictEqual(Array.from(context.getDashboardData(dashboardKey, {}).classes),
+  ['10A1', '3A']);
+const manualClassInput = {
+  session_id: '3A-MANUAL', class_id: '3A', period: 'Sáng',
+  device_id: 'robot-03', report_email: 'teacher@example.com',
+  starts_at: new Date(now + 7200000).toISOString(),
+  late_after: new Date(now + 7500000).toISOString(),
+  ends_at: new Date(now + 10800000).toISOString(),
+};
+assert.strictEqual(context.createClassSession(dashboardKey, manualClassInput)
+  .selected_session.class_id, '3A');
+assert.strictEqual(context.updateClassSessionStatus(dashboardKey, {
+  session_id: '3A-MANUAL', status: 'CANCELLED',
+}).selected_session.status, 'CANCELLED');
+sheets.Students.rows.pop();
+assert.throws(() => context.createClassSession(dashboardKey, {
+  ...manualClassInput, session_id: 'UNKNOWN-CLASS', class_id: '99Z',
+}), /class_without_students/);
+assert.throws(() => context.createClassSession(dashboardKey, {
+  ...manualClassInput, session_id: 'DISABLED-CLASS', class_id: '11A1',
+}), /class_without_students/);
+
 assert.throws(() => context.createClassSession(dashboardKey, {
   session_id: '10A1-NEW-CONFLICT', class_id: '10A1', period: 'P3',
   device_id: 'robot-01', actor: 'Teacher A',
+  report_email: 'teacher@example.com',
   starts_at: new Date(now + 7200000).toISOString(),
   late_after: new Date(now + 7500000).toISOString(),
   ends_at: new Date(now + 10800000).toISOString(),
@@ -575,9 +613,18 @@ const closedDashboard = context.updateClassSessionStatus(dashboardKey, {
   reason: 'Class finished',
 });
 assert.strictEqual(closedDashboard.selected_session.status, 'CLOSED');
+assert.strictEqual(sentMail.length, 0, 'legacy session must not send mail');
+assert.throws(() => context.createClassSession(dashboardKey, {
+  session_id: 'INVALID-MAIL', class_id: '10A1', period: 'Sáng',
+  device_id: 'robot-01', report_email: 'one@example.com, two@example.com',
+  starts_at: new Date(now + 7200000).toISOString(),
+  late_after: new Date(now + 7500000).toISOString(),
+  ends_at: new Date(now + 10800000).toISOString(),
+}), /invalid_report_email/);
 const createdDashboard = context.createClassSession(dashboardKey, {
   session_id: '10A1-NEW', class_id: '10A1', period: 'Sáng',
   device_id: 'robot-01', actor: 'Teacher A',
+  report_email: 'teacher@example.com',
   starts_at: new Date(now + 7200000).toISOString(),
   late_after: new Date(now + 7500000).toISOString(),
   ends_at: new Date(now + 10800000).toISOString(),
@@ -585,9 +632,72 @@ const createdDashboard = context.createClassSession(dashboardKey, {
 assert.strictEqual(createdDashboard.selected_session.session_id, '10A1-NEW');
 assert.strictEqual(createdDashboard.selected_session.period, 'Sáng');
 assert.strictEqual(createdDashboard.selected_session.status, 'ACTIVE');
+assert.strictEqual(createdDashboard.selected_session.report_email, 'teacher@example.com');
 assert.match(createdDashboard.selected_session.date, /^\d{4}-\d{2}-\d{2}$/);
 assert.strictEqual(sheets.AuditLog.rows.at(-1)[2], 'SESSION_CREATE');
 assert.strictEqual(sheets.AuditLog.rows.at(-1)[1], 'Giáo viên mẫu');
+context.recordManualCorrection(dashboardKey, {
+  session_id: '10A1-NEW', student_id: '2', status: 'EXCUSED',
+  reason: 'Có giấy xin phép',
+});
+const queued = context.updateClassSessionStatus(dashboardKey, {
+  session_id: '10A1-NEW', status: 'CLOSED', reason: 'Class finished',
+});
+assert.strictEqual(queued.selected_session.report_status, 'PENDING');
+assert.strictEqual(context.sendClosedSessionReports().processed_count, 1);
+assert.strictEqual(sentMail.length, 1);
+assert.strictEqual(sentMail[0].to, 'teacher@example.com');
+assert.strictEqual(sentMail[0].attachments[0].name, '10A1-NEW.csv');
+assert.match(sentMail[0].attachments[0].body, /"Reason","Timestamp"/);
+assert.match(sentMail[0].attachments[0].body, /"Có phép","Có giấy xin phép"/);
+assert.ok(sentMail[0].attachments[0].body.startsWith('\ufeff'));
+assert.strictEqual(context.getDashboardData(dashboardKey, {
+  session_id: '10A1-NEW',
+}).selected_session.report_status, 'SENT');
+assert.strictEqual(context.sendClosedSessionReports().processed_count, 0);
+assert.strictEqual(sentMail.length, 1, 'sent report must not be repeated');
+assert.strictEqual(sheets.AuditLog.rows.at(-1)[2], 'SESSION_REPORT_SENT');
+const csvInjection = context.sessionReportCsv({
+  selected_session: {session_id: 'TEST-CSV'},
+  students: [{student_id: '4', name: '=2+2', class_id: '10A1',
+    status: 'ABSENT', override: {reason: '+unsafe'}, timestamp: '',
+    event_id: '', confidence_milli: null}],
+});
+assert.match(csvInjection, /"'=2\+2"/);
+assert.match(csvInjection, /"'\+unsafe"/);
+sheets.Sessions.appendRow([
+  'CANCELLED-MAIL', '10A1', '2026-09-21', 'Chiều', new Date(now - 3600000),
+  new Date(now - 3000000), new Date(now + 3600000), 'CANCELLED',
+  'robot-cancelled', new Date(), 'teacher@example.com', 'PENDING', '', '', 0, '',
+]);
+assert.strictEqual(context.sendClosedSessionReports().processed_count, 0);
+sheets.Sessions.rows.pop();
+sheets.Sessions.appendRow([
+  'UNCERTAIN-MAIL', '10A1', '2026-09-21', 'Chiều', new Date(now - 3600000),
+  new Date(now - 3000000), new Date(now - 1000), 'CLOSED',
+  'robot-uncertain', new Date(), 'teacher@example.com', 'SENDING', '', '', 1, '',
+]);
+assert.strictEqual(context.sendClosedSessionReports().processed_count, 0);
+sheets.Sessions.rows.pop();
+
+// A transient send failure remains visible and is retried after backoff.
+sheets.Sessions.appendRow([
+  'MAIL-RETRY', '10A1', '2026-09-21', 'Chiều', new Date(now - 3600000),
+  new Date(now - 3000000), new Date(now - 1000), 'ACTIVE', 'robot-retry',
+  new Date(), 'retry@example.com', '', '', '', 0, '',
+]);
+assert.ok(context.closeExpiredSessions().session_ids.includes('MAIL-RETRY'));
+mailFailure = true;
+assert.strictEqual(context.sendClosedSessionReports().processed_count, 1);
+mailFailure = false;
+const retryRow = sheets.Sessions.rows.at(-1);
+assert.strictEqual(retryRow[11], 'FAILED');
+assert.match(retryRow[13], /Temporary mail failure/);
+assert.strictEqual(context.sendClosedSessionReports().processed_count, 0);
+retryRow[15] = new Date(now - 1000);
+assert.strictEqual(context.sendClosedSessionReports().processed_count, 1);
+assert.strictEqual(retryRow[11], 'SENT');
+assert.strictEqual(sentMail.length, 2);
 
 assert.strictEqual(post({...validPayload, api_version: 99}).error,
                    'unsupported_api_version');
@@ -607,7 +717,11 @@ lockAvailable = true;
 // A staging sheet migrated by an earlier draft had 12 Device columns.
 // P2.4 appends secret rotation and health columns without rewriting old data.
 sheets.Devices.rows.forEach((row) => row.splice(12));
+// A pre-email deployment has ten Session columns; migration appends fields.
+sheets.Sessions.rows.forEach((row) => row.splice(10));
 assert.strictEqual(context.migrateToV2().ok, true);
+assert.strictEqual(sheets.Sessions.rows[0].length, 16);
+assert.strictEqual(sheets.Sessions.rows[0][10], 'Report Email');
 assert.strictEqual(sheets.Devices.rows[0].length, 16);
 assert.strictEqual(sheets.Devices.rows[0][12], 'Secret Rotated At');
 assert.strictEqual(sheets.Devices.rows[0][13], 'Status');

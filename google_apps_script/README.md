@@ -16,7 +16,8 @@ trùng. Payload Phase 1 không có `type` vẫn được hiểu là `attendance`
      P2.3 dùng secret riêng được provision ở bước 5.
 4. Chạy `setup`, sau đó chạy `migrateToV2` một lần và cấp quyền.
 5. Chạy `installPhase2Automation` một lần để tạo trigger tự đóng session mỗi
-   năm phút và trigger cập nhật online/offline mỗi phút.
+   năm phút, cập nhật online/offline mỗi phút và gửi CSV email mỗi phút.
+   Cấp quyền gửi email khi Google yêu cầu.
 6. Provision secret riêng cho thiết bị theo mục bên dưới.
 7. Deploy dưới dạng **Web app**, execute as owner, chọn **Anyone** để ESP32
    truy cập mà không cần đăng nhập Google.
@@ -32,12 +33,42 @@ và **Buổi chiều 14:00–16:30** (giờ Việt Nam) thay cho tiết học. B
 nhãn đó trong cột `Period` hiện có, nên không cần đổi schema Sheet. Mốc đi
 muộn mặc định sau 10 phút. Nút một chạm chỉ gợi ý lớp có buổi gần đây **cùng
 Sáng/Chiều**, máy ONLINE và chưa có buổi tương ứng của lớp trong ngày; đây
-chưa phải thời khóa biểu tự động. **Bắt đầu buổi học mới** chỉ cần chọn lớp
-đang cấu hình và Sáng/Chiều; một máy được chọn sẵn, nhiều máy thì giáo viên
-chọn máy ngay trong biểu mẫu. Không có lớp/máy online thì không thể bấm bắt
+chưa phải thời khóa biểu tự động. **Bắt đầu buổi học mới** cho giáo viên gõ mã
+lớp trong ô text (có gợi ý từ roster) và chọn Sáng/Chiều. Lớp phải có ít nhất
+một học sinh `Active=TRUE` trong `Students`; lớp bị tắt trong `Classes` không
+thể mở buổi. Một máy được chọn sẵn, nhiều máy thì giáo viên
+chọn máy ngay trong biểu mẫu. Giáo viên nhập email nhận CSV; hệ thống gợi ý
+email từng dùng cho cùng lớp nhưng cần kiểm tra lại trước khi bắt đầu. Nút
+một chạm chỉ hiện khi buổi gần nhất đã có email. Không có lớp/máy online thì không thể bấm bắt
 đầu. Giờ và mã buổi có thể đổi trong **Tùy chọn nâng cao**. Lọc lịch sử và
 bảng chẩn đoán thiết bị nằm trong các mục thu gọn. Thay cả `Code.gs` và
-`Dashboard.html` rồi cập nhật Web App deployment; không đổi schema Sheet.
+`Dashboard.html` rồi cập nhật Web App deployment. Tính năng email cần chạy
+migration để nối thêm các cột `Sessions` như hướng dẫn bên dưới.
+
+## CSV tự gửi sau khi kết thúc buổi
+
+Buổi mới yêu cầu **một email nhận báo cáo**. Khi giáo viên đóng tay hoặc hệ
+thống tự đóng tại `Ends At`, cột `Report Status` chuyển `PENDING`. Trigger
+`sendClosedSessionReports` chạy mỗi phút, gửi một CSV cho một buổi trong mỗi
+lượt, rồi ghi `SENT` và thời điểm gửi. CSV có cùng chín cột với nút **Xuất CSV**
+trên dashboard, gồm `Reason` cho điều chỉnh. Email được gửi từ tài khoản Google
+đã tạo trigger, không phải từ địa chỉ giáo viên nhập. Hủy buổi (`CANCELLED`)
+không gửi báo cáo; buổi cũ chưa có `Report Email` cũng không tự gửi.
+
+Nếu MailApp báo lỗi/hết quota, trạng thái thành `FAILED`; trigger thử lại với
+thời gian chờ tăng dần, tối đa sáu giờ. Trường hợp tiến trình dừng sau khi gọi
+gửi nhưng trước khi ghi `SENT`, trạng thái có thể kẹt ở `SENDING`; **không tự
+gửi lại** để tránh hai email. Quản trị viên kiểm tra hộp thư người nhận và
+`Sessions`/`AuditLog` trước khi quyết định xử lý. Một điều chỉnh điểm danh sau
+khi email đã gửi không sửa file đính kèm cũ; giáo viên dùng **Xuất CSV** để lấy
+bản mới. Nếu robot offline còn sự kiện chưa upload lúc gửi, báo cáo có thể thiếu
+lượt đó; cần đối chiếu `Pending Events` trước khi coi CSV là bản chốt.
+
+Để nâng cấp Sheet đang dùng: sao lưu spreadsheet, cập nhật cả hai file Apps
+Script, chạy `migrateToV2` (chỉ nối sáu cột cuối `Sessions`, không xóa mười cột
+cũ), chạy `installPhase2Automation` và cấp quyền gửi mail, rồi cập nhật Web App
+deployment hiện tại sang version mới. Kiểm tra ba trigger và thử bằng một buổi
+test theo [checklist end-to-end](../FULL_SYSTEM_ACCEPTANCE_TEST.md) (TC-14).
 
 ## OTA P2.5
 
@@ -53,8 +84,8 @@ dùng `tools/package_ota.sh` để lấy và đặt các Script Properties:
 
 Property sai định dạng trả `ota_manifest_invalid`; target trùng version đang
 chạy hoặc OTA tắt trả `available:false`. Thay Script Properties không cần tạo
-deployment mới. Quy trình checksum, power-cut và rollback nằm trong
-`../P2_5_TEST_GUIDE.md`.
+deployment mới. Quy trình checksum, ngắt nguồn và rollback nằm trong
+[checklist end-to-end](../FULL_SYSTEM_ACCEPTANCE_TEST.md) (TC-13).
 
 ## Chuẩn bị schema Phase 2 trên sheet staging
 
@@ -68,8 +99,8 @@ spreadsheet staging, đặt ID của nó vào Script Property `SPREADSHEET_ID`, 
    `repaired_attendance_session_ids` và đủ sáu sheet:
    `Attendance`, `Students`, `Classes`, `Sessions`, `Devices`, `AuditLog`.
 5. Chạy `installPhase2Automation`; trong **Triggers** phải có đúng một
-   `closeExpiredSessions` chạy mỗi năm phút và một
-   `refreshDeviceStatuses` chạy mỗi phút.
+   `closeExpiredSessions` chạy mỗi năm phút, một `refreshDeviceStatuses` mỗi
+   phút và một `sendClosedSessionReports` mỗi phút. Cấp quyền gửi mail.
 6. Chạy lại `migrateToV2`. Số sheet, số cột và dữ liệu phải giữ nguyên.
 
 Migration giữ nguyên chín cột Phase 1 của `Attendance`, chỉ nối thêm `Session
@@ -78,6 +109,11 @@ từ bản cũ, migration nối thêm `Secret Rotated At`, `Status`,
 `Sync Latency (ms)` và `Consecutive Failures` mà không sửa dữ liệu cũ. Nếu header hiện có không
 đúng, hàm dừng với `Schema mismatch` và không tự đổi tên/xóa dữ liệu. Hợp đồng
 payload đầy đủ nằm trong `../API_V2_CONTRACT.md`.
+
+Với sheet `Sessions` mười cột từ bản cũ, migration chỉ nối sáu cột email
+(`Report Email`, `Report Status`, `Report Sent At`, `Report Error`,
+`Report Attempts`, `Report Next Retry At`). Các buổi cũ để trống email nên
+không bị gửi báo cáo hồi tố.
 
 `Session ID` được ép lưu ở dạng text. Migration sửa các ID toàn số đã bị
 Google Sheets đổi thành ngày (ví dụ ngày 23/09/2026 được phục hồi thành

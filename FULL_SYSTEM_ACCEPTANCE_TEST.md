@@ -1,9 +1,10 @@
 # Nghiệm thu end-to-end — ESP32-S3 Attendance System (Phase 1–3)
 
-**Trạng thái:** quy trình để chạy trên thiết bị thật; chưa phải biên bản PASS.
-Source, host tests và build Phase 3 đã PASS, nhưng P3.2 (DFPlayer/loa/microSD)
-và các ca phần cứng cuối chưa có bằng chứng nghiệm thu trong repository. Không
-đánh dấu dự án hoàn tất chỉ vì bài test tự động chạy xanh.
+**Trạng thái:** checklist nghiệm thu, không phải biên bản PASS. Chủ dự án đã
+xác nhận nhiều luồng phần cứng (loa, điểm danh hai học sinh, đóng buổi và
+chạy lâu) hoạt động tốt, nhưng repo không chứa biên bản đã ẩn dữ liệu cá nhân.
+OTA/rollback và gửi CSV qua email vẫn cần nghiệm thu thực tế. Không đánh dấu
+release hoàn tất chỉ vì bài test tự động chạy xanh.
 
 Các lệnh dùng `git rev-parse --show-toplevel` bên dưới cần chạy từ một thư mục
 bên trong bản clone repository.
@@ -44,6 +45,7 @@ nếu phải chạy lại; ghi thêm lượt mới):
 | TC-11 Thiếu ngoại vi | | |
 | TC-12 Soak 30 phút | | |
 | TC-13 OTA/rollback | | |
+| TC-14 CSV email sau đóng buổi | | |
 
 ## 1. Chuẩn bị hệ thống (TC-00, khoảng 15 phút)
 
@@ -53,8 +55,9 @@ nếu phải chạy lại; ghi thêm lượt mới):
    `ok:true`, `api_version:2`, `schema_version:"2"`; dashboard ở
    `<EXEC_URL>?view=dashboard`. Không chạy lại `setup`, migration hay
    provision secret chỉ vì test nếu hệ thống đã hoạt động.
-2. Kiểm tra đúng **một** trigger `closeExpiredSessions` (mỗi 5 phút) và
-   `refreshDeviceStatuses` (mỗi 1 phút). Script Property
+2. Kiểm tra đúng **một** trigger `closeExpiredSessions` (mỗi 5 phút),
+   `refreshDeviceStatuses` (mỗi 1 phút) và `sendClosedSessionReports` (mỗi
+   1 phút, sau khi cấp quyền MailApp). Script Property
    `OTA_ENABLED=false` cho đến ca OTA. Sheet `Students` có ID 1 và 2,
    cùng lớp với metadata trên board, `Active=TRUE`; hai danh tính đã enroll.
 3. Khi **đã rút nguồn**, nhìn board với camera ở trên, hai USB-C ở dưới; tìm
@@ -69,7 +72,8 @@ nếu phải chạy lại; ghi thêm lượt mới):
    | — | loa giữa SPK1 và SPK2 |
 
    Không nối loa xuống GND, không cấp module từ 3V3. Nếu module clone gây
-   sụt áp, hạ volume và xem mục nguồn ở `P3_TEST_GUIDE.md`.
+   sụt áp, kiểm tra nguồn và dây trước khi thử tiếp; xem
+   `HARDWARE_AND_UBUNTU_GUIDE.md`.
 4. Chuẩn bị thẻ FAT32 (tối đa 32 GB) với sáu MP3 câu chung và một MP3 lời
    chào đầy đủ cho mỗi Student ID, không phải file rỗng. Export
    `student-voice-roster.json` tại portal đăng ký, chuẩn bị `student_0001.mp3`
@@ -81,7 +85,7 @@ nếu phải chạy lại; ghi thêm lượt mới):
    `0001` khởi động, `0002` điểm danh thành công, `0003` trùng,
    `0004` chưa có giờ, `0005` enroll, `0006` lỗi có thể phục hồi;
    `1001`/`1002` là lời chào đúng tên ID 1/2. Xem chi tiết tại
-   `P3_TEST_GUIDE.md`.
+   `AUDIO_CLASS_ROSTER_GUIDE.md`.
 5. Ubuntu: `ls -l /dev/serial/by-id/`, xác minh symlink đang trỏ tới board.
    Trong `firmware/` chạy:
 
@@ -186,7 +190,7 @@ nếu phải chạy lại; ghi thêm lượt mới):
    không camera freeze, panic, watchdog hoặc brownout. Chụp trạng thái
    ONLINE → OFFLINE → ONLINE và log backoff.
 
-## 5. Ngoại vi lỗi, độ ổn định, OTA (TC-11…13)
+## 5. Ngoại vi lỗi, độ ổn định, OTA và email (TC-11…14)
 
 1. **TC-11 — thiếu microSD/module:** tắt nguồn trước khi tháo thẻ; boot lại,
    camera/điểm danh/local outbox/upload vẫn bình thường dù không có âm thanh.
@@ -217,15 +221,31 @@ nếu phải chạy lại; ghi thêm lượt mới):
    60 giây; định kỳ lâu hơn). PASS: image mới được xác minh, boot, qua health
    gate, nhận diện và audio trở lại, data/Sheet còn nguyên, dashboard thấy
    version mới. Reset lần nữa và xác nhận image mới vẫn VALID.
-4. Nếu các ca **checksum sai, rút nguồn giữa tải, rollback tự động** của P2.5
-   chưa từng được nghiệm thu trên board, chạy thêm theo
-   `P2_5_TEST_GUIDE.md`, nhưng thay toàn bộ tên/version cũ bằng candidate
-   riêng dựa trên `3.1.0-phase3-ux-dev` (rollback test dùng cờ
-   `CDP_OTA_ROLLBACK_TEST=ON`). Không flash image rollback-test qua USB làm
-   image nền. Giữ lại log image trước/sau và kết quả bảo toàn dữ liệu. Sau
-   cùng đặt `OTA_ENABLED=false`, bỏ manifest test khi không dùng nữa và
-   kiểm tra version thực đang chạy. Nếu OTA chưa có HTTPS host hoặc chưa có
-   điều kiện ngắt nguồn có kiểm soát, ghi **BLOCKED**, không coi dự án đã đóng.
+4. Kiểm tra ba ca lỗi OTA trên **thiết bị thử**, không trong buổi học thật:
+   (a) dùng SHA-256 sai cho candidate khác version, xác nhận boot partition
+   không đổi; (b) dùng SHA đúng rồi ngắt nguồn có kiểm soát khi đang tải,
+   tắt `OTA_ENABLED` trước khi cấp nguồn lại và xác nhận bản tốt vẫn chạy;
+   (c) chỉ sau khi candidate tốt đã được xác nhận, tạo image rollback-test
+   với `CDP_OTA_ROLLBACK_TEST=ON` và version mới hơn. Phân phối image lỗi qua
+   OTA, **không flash qua USB làm image nền**. Tắt OTA khi image bắt đầu tải;
+   image lỗi phải boot một lần rồi tự quay về bản tốt. Reset lại và kiểm tra
+   danh tính, outbox, âm thanh và upload vẫn còn. Nếu không rollback, dừng
+   thử và giữ serial log. Sau cùng đặt `OTA_ENABLED=false` và ghi version,
+   checksum thực. Nếu thiếu HTTPS host hoặc điều kiện ngắt nguồn an toàn,
+   ghi **BLOCKED**, không coi dự án đã đóng.
+
+5. **TC-14 — gửi CSV qua email:** sao lưu Sheet, cập nhật cả `Code.gs` và
+   `Dashboard.html`, chạy `migrateToV2` và `installPhase2Automation`, cấp
+   quyền MailApp rồi cập nhật deployment hiện tại. Dùng email test thuộc
+   quyền kiểm soát của bạn. Tạo buổi A có một lượt điểm danh và một điều
+   chỉnh `Có phép` kèm lý do; đóng tay. `Report Status` phải chuyển
+   `PENDING` → `SENT`, có thời điểm gửi và đúng một email đính kèm CSV với
+   `Reason`/Event ID khớp dashboard. Chạy trigger lại không được gửi trùng.
+   Tạo buổi B, để trigger tự đóng rồi kiểm tra tương tự. Kiểm tra email sai
+   định dạng bị từ chối; mô phỏng lỗi gửi trên staging (không cố ý tiêu quota
+   thật), xác nhận `FAILED` và mốc retry. Nếu kẹt `SENDING`, kiểm tra hộp thư
+   và AuditLog trước khi xử lý để tránh gửi hai lần. Báo cáo gửi khi robot còn
+   pending events có thể thiếu lượt offline; chỉ chốt khi pending về 0.
 
 ## 6. Gate đóng dự án và bằng chứng bàn giao
 
@@ -235,7 +255,7 @@ nếu phải chạy lại; ghi thêm lượt mới):
 | Luồng người dùng | TC-00…07 PASS, hai Event ID được đối chiếu local/Sheet/dashboard/AuditLog |
 | Độ bền | TC-08…10 PASS, outbox đúng một lần, ONLINE → OFFLINE → ONLINE |
 | Phase 3 | TC-01…03, TC-11…12 PASS, sáu track đúng, ngoại vi optional, 30 phút ổn định |
-| Release | TC-13 PASS và fault/rollback OTA P2.5 có bằng chứng hoặc chạy bổ sung |
+| Release | TC-13 và TC-14 PASS; fault/rollback OTA P2.5 và email thật có bằng chứng |
 
 Chạy kiểm thử tự động tại repo root:
 
@@ -250,6 +270,6 @@ eim run "idf.py build" v6.0.2
 Các test JavaScript cần Node.js; nếu binary không nằm trong `PATH`, đặt
 `NODE_BIN` trỏ tới executable đã cài và dùng cùng executable đó cho hai
 lệnh Apps Script. Lưu output cùng biên bản (redact secret). Sau khi **tất cả**
-gate có bằng chứng, cập nhật
-`PHASE3_PROGRESS.md` thành hoàn tất và chốt firmware/version/checksum thực
-đã test. Nếu còn FAIL/BLOCKED, ghi rõ và sửa trước khi gắn nhãn release.
+gate có bằng chứng, chốt firmware/version/checksum thực đã test trong biên bản
+riêng (không chứa dữ liệu cá nhân) rồi mới gắn nhãn release. Nếu còn
+FAIL/BLOCKED, ghi rõ và sửa trước khi phát hành.

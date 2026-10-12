@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang='vi'>
+<head>
+<meta charset='UTF-8'>
+<meta name='viewport' content='width=device-width,initial-scale=1'>
+<title>Cấu hình Robot</title>
+<style>
+body{margin:0;font:16px/1.55 system-ui,-apple-system,sans-serif;background:#f4f7fb;color:#18263c;padding:20px}
+main{max-width:620px;margin:auto}
+h1{font-size:28px;letter-spacing:-.03em;margin:8px 0 4px}
+h2{font-size:19px;margin:0 0 8px}
+.intro{color:#66758a;margin:0 0 20px}
+.card{background:white;border:1px solid #dbe3ed;border-radius:18px;padding:24px;margin:16px 0;box-shadow:0 8px 28px #12213f0c}
+label{display:block;margin:14px 0 5px;font-weight:650}
+input{width:100%;box-sizing:border-box;padding:12px;border:1px solid #bcc9da;border-radius:10px;background:#fff;color:#18263c;font:inherit}
+input:focus{outline:3px solid #dce9ff;border-color:#265ad5}
+button,.link{display:block;width:100%;box-sizing:border-box;padding:12px;border:0;border-radius:10px;margin-top:12px;color:#fff;text-align:center;text-decoration:none;font:650 1em system-ui;cursor:pointer}
+.primary{background:#2556d8}
+.secondary{background:#edf2fa;color:#223556}
+.warning{background:#a55310}
+.danger{background:#a12b32}
+button:disabled{opacity:.55;cursor:not-allowed}
+#status{white-space:pre-wrap;padding:13px;border-radius:10px;background:#eef4ff;margin:16px 0;color:#314a70}
+.ok{color:#08613c}
+.err{color:#aa2730}
+.hint{color:#66758a;font-size:.9em;line-height:1.45}
+.audio-state{padding:11px;background:#f1f5fa;border-radius:10px;color:#40536c}
+.check{display:flex;gap:8px;align-items:center}
+.check input{width:auto;margin:0}
+details{border-top:1px solid #dbe3ed;margin-top:20px;padding-top:16px}
+summary{font-weight:700;cursor:pointer;color:#29487f}
+.actions{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.actions button{margin-top:12px}
+@media(max-width:560px){body{padding:12px}
+.card{padding:18px}
+.actions{grid-template-columns:1fr}
+}
+</style>
+</head>
+<body>
+<main>
+<h1>Cấu hình robot</h1>
+<p class='intro'>Chỉ cần đổi Wi-Fi khi chuyển mạng. Điểm danh hằng ngày trên sổ giáo viên.</p>
+<div class='card'>
+<h2>Kết nối Wi-Fi</h2>
+<div id='status'>Đang đọc trạng thái...</div>
+<button class='secondary' type='button' onclick='scanWifi()'>Quét Wi-Fi 2,4 GHz</button>
+<form id='configForm'>
+<label>Wi-Fi SSID</label>
+<input id='ssid' name='ssid' maxlength='32' list='networks' required>
+<datalist id='networks'>
+</datalist>
+<label>Mật khẩu Wi-Fi</label>
+<input name='wifi_password' type='password' maxlength='63' autocomplete='new-password' placeholder='Để trống nếu không đổi mạng hoặc mật khẩu'>
+<details id='advanced'>
+<summary>Cài đặt kỹ thuật (lần đầu / khi đổi hệ thống)</summary>
+<p class='hint'>Device secret là khóa riêng để robot xác thực với Sheets. Chỉ quản trị viên cần nhập khi cài lần đầu hoặc đổi khóa; robot không hiển thị khóa cũ.</p>
+<label>Apps Script /exec URL</label>
+<input name='gas_url' type='url' maxlength='383' placeholder='https://script.google.com/macros/s/.../exec'>
+<label>Device ID</label>
+<input id='deviceId' name='device_id' maxlength='31' placeholder='robot-01'>
+<label>Device secret mới</label>
+<input name='device_secret' type='password' minlength='32' maxlength='127' autocomplete='new-password' placeholder='Để trống để giữ khóa hiện tại'>
+</details>
+<button id='saveBtn' class='primary' type='submit'>Kiểm tra và lưu cấu hình</button>
+</form>
+<button id='restartBtn' class='primary' type='button' style='display:none' onclick='restartRobot()'>Khởi động lại để áp dụng</button>
+<details>
+<summary>Khôi phục cấu hình (quản trị viên)</summary>
+<p class='hint'>Chỉ dùng khi cài đặt mới thất bại. Reset không xóa khuôn mặt hoặc lịch sử.</p>
+<button id='rollbackBtn' class='warning' type='button' onclick='rollbackConfig()'>Quay lại cấu hình trước</button>
+<button class='danger' type='button' onclick='resetConfig()'>Xóa cấu hình mạng/cloud</button>
+</details>
+</div>
+<div class='card'>
+<h2>Âm thanh</h2>
+<div id='audioState' class='audio-state'>Đang đọc trạng thái audio...</div>
+<p class='hint'>Âm lượng mặc định 30/30 (mức đã kiểm thử).</p>
+<label class='check'>
+<input id='audioEnabled' type='checkbox'> Bật phản hồi âm thanh</label>
+<button class='primary' type='button' onclick='saveAudio()'>Lưu cấu hình âm thanh</button>
+<button class='secondary' type='button' onclick='testAudio()'>Phát thử câu điểm danh thành công</button>
+<details>
+<summary>Kiểm tra lời chào theo học sinh</summary>
+<label>Student ID (1–50)</label>
+<input id='audioStudentId' type='number' min='1' max='50' placeholder='Ví dụ: 1'>
+<button class='secondary' type='button' onclick='testStudentAudio()'>Phát thử lời chào có tên</button>
+<p class='hint'>Nếu UART đã sẵn sàng nhưng module chưa phản hồi, kiểm tra thẻ microSD, nguồn 5V, GND chung và hai dây TX/RX đấu chéo.</p>
+</details>
+<a class='link secondary' href='/'>Quay lại đăng ký khuôn mặt</a>
+</div>
+</main>
+<script>
+const statusEl = document.getElementById('status');
+const failureReasons = {
+  wifi_connection_failed: 'Không kết nối được Wi-Fi mới. Kiểm tra mạng 2,4 GHz và mật khẩu.',
+  ntp_sync_failed: 'Đã vào Wi-Fi nhưng không đồng bộ được giờ qua Internet.',
+  cloud_authentication_failed: 'Đã vào Wi-Fi nhưng Apps Script không chấp nhận thiết bị.',
+  config_save_failed: 'Đã kiểm tra xong nhưng không lưu được cấu hình.',
+};
+
+function show(message, ok) {
+  statusEl.textContent = message;
+  statusEl.className = ok ? 'ok' : 'err';
+}
+
+async function jsonFetch(url, options) {
+  const response = await fetch(url, options);
+  let value;
+  try {
+    value = await response.json();
+  } catch (error) {
+    throw new Error('Phản hồi không hợp lệ');
+  }
+  if (!response.ok || !value.ok) {
+    throw new Error(value.error || 'Yêu cầu thất bại');
+  }
+  return value;
+}
+
+async function refresh() {
+  try {
+    const value = await jsonFetch('/config/status');
+    show(value.configured
+      ? 'Đã kết nối cấu hình. Nếu chỉ đổi Wi-Fi, không cần nhập lại mục kỹ thuật.'
+      : 'Cài đặt lần đầu: mở Cài đặt kỹ thuật và điền thông tin cloud.', true);
+    if (!value.configured) document.getElementById('advanced').open = true;
+    if (value.ssid) document.getElementById('ssid').value = value.ssid;
+    if (value.device_id) document.getElementById('deviceId').value = value.device_id;
+    document.getElementById('rollbackBtn').disabled = !value.rollback_available;
+    pollConfigJob();
+  } catch (error) {
+    show(error.message, false);
+  }
+}
+
+async function scanWifi() {
+  show('Đang quét Wi-Fi...', true);
+  try {
+    const value = await jsonFetch('/wifi-scan');
+    const list = document.getElementById('networks');
+    list.textContent = '';
+    value.networks.forEach((network) => {
+      const option = document.createElement('option');
+      option.value = network.ssid;
+      option.label = network.rssi + ' dBm';
+      list.appendChild(option);
+    });
+    show('Đã tìm thấy ' + value.networks.length + ' mạng. Chọn SSID rồi nhập mật khẩu.', true);
+  } catch (error) {
+    show(error.message, false);
+  }
+}
+
+document.getElementById('configForm').onsubmit = async function (event) {
+  event.preventDefault();
+  const button = document.getElementById('saveBtn');
+  button.disabled = true;
+  document.getElementById('restartBtn').style.display = 'none';
+  show('Đang gửi yêu cầu kiểm tra. Kết nối RobotSetup có thể ngắt vài giây...', true);
+  try {
+    const body = new URLSearchParams(new FormData(event.target));
+    await jsonFetch('/config/test-and-save', {method: 'POST', body});
+    setTimeout(pollConfigJob, 700);
+  } catch (error) {
+    if (error instanceof TypeError) {
+      show('Mất kết nối khi gửi yêu cầu. Đang kiểm tra robot đã nhận hay chưa; đừng bấm lưu lại...', true);
+      setTimeout(() => pollConfigJob(true, 0), 1200);
+    } else {
+      show('Không thể bắt đầu kiểm tra: ' + error.message, false);
+      button.disabled = false;
+    }
+  }
+};
+
+async function pollConfigJob(uncertain, idleChecks) {
+  try {
+    const value = await jsonFetch('/config/job');
+    if (value.state === 'idle' && uncertain) {
+      if ((idleChecks || 0) < 3) {
+        setTimeout(() => pollConfigJob(true, (idleChecks || 0) + 1), 1000);
+        return;
+      }
+      show('Robot chưa nhận yêu cầu. Kiểm tra kết nối RobotSetup rồi thử lưu lại.', false);
+      document.getElementById('saveBtn').disabled = false;
+      return;
+    }
+    if (value.state === 'running') {
+      show('Đang thử Wi-Fi, NTP và Apps Script. Nếu AP đổi kênh, hãy chờ máy tự kết nối lại...', true);
+      setTimeout(pollConfigJob, 1500);
+      return;
+    }
+    document.getElementById('saveBtn').disabled = false;
+    if (value.state === 'saved') {
+      show('Đã kiểm tra và lưu. Bấm khởi động lại để áp dụng.', true);
+      document.querySelector('[name=wifi_password]').value = '';
+      document.querySelector('[name=device_secret]').value = '';
+      document.getElementById('restartBtn').style.display = 'block';
+    } else if (value.state === 'failed') {
+      show('Không lưu cấu hình: ' + (failureReasons[value.error] || value.error), false);
+    }
+  } catch (error) {
+    show('AP đang đổi kênh hoặc tạm mất kết nối. Kết nối lại RobotSetup; trang sẽ tự kiểm tra tiếp...', true);
+    setTimeout(() => pollConfigJob(uncertain, idleChecks), 2500);
+  }
+}
+
+async function restartRobot() {
+  show('Robot đang khởi động lại...', true);
+  try {
+    await jsonFetch('/config/restart', {method: 'POST'});
+  } catch (error) {}
+}
+
+async function rollbackConfig() {
+  if (prompt('Nhập ROLLBACK để quay lại cấu hình trước:') !== 'ROLLBACK') return;
+  try {
+    const value = await jsonFetch('/config/rollback', {
+      method: 'POST', body: new URLSearchParams({confirm: 'ROLLBACK'}),
+    });
+    show('Đã chọn generation ' + value.generation + '. Robot đang khởi động lại...', true);
+  } catch (error) {
+    show(error.message, false);
+  }
+}
+
+async function resetConfig() {
+  if (prompt('Chỉ xóa Wi-Fi/cloud; giữ khuôn mặt và lịch sử. Nhập RESET CONFIG:') !== 'RESET CONFIG') return;
+  try {
+    await jsonFetch('/config/reset', {
+      method: 'POST', body: new URLSearchParams({confirm: 'RESET CONFIG'}),
+    });
+    show('Đã xóa cấu hình mạng/cloud. Danh tính vẫn được giữ. Robot đang khởi động lại...', true);
+  } catch (error) {
+    show(error.message, false);
+  }
+}
+
+async function refreshAudio() {
+  try {
+    const value = await jsonFetch('/audio/status');
+    document.getElementById('audioEnabled').checked = value.enabled;
+    document.getElementById('audioState').textContent =
+      'UART ' + (value.initialized ? 'sẵn sàng' : 'đang khởi tạo') +
+      ' · DFPlayer ' + (value.module_responding ? 'đã phản hồi' : 'chưa phản hồi') +
+      ' · dropped ' + value.dropped_events;
+  } catch (error) {
+    document.getElementById('audioState').textContent = error.message;
+  }
+}
+
+async function saveAudio() {
+  try {
+    const body = new URLSearchParams({
+      enabled: document.getElementById('audioEnabled').checked ? '1' : '0',
+      volume: '30',
+    });
+    await jsonFetch('/audio/config', {method: 'POST', body});
+    show('Đã lưu cấu hình âm thanh.', true);
+    await refreshAudio();
+  } catch (error) {
+    show(error.message, false);
+  }
+}
+
+async function testAudio() {
+  try {
+    await jsonFetch('/audio/test', {
+      method: 'POST', body: new URLSearchParams({track: '2'}),
+    });
+    show('Đã gửi lệnh phát /mp3/0002.mp3.', true);
+    setTimeout(refreshAudio, 500);
+  } catch (error) {
+    show(error.message, false);
+  }
+}
+
+async function testStudentAudio() {
+  const id = Number(document.getElementById('audioStudentId').value);
+  if (!Number.isInteger(id) || id < 1 || id > 50) {
+    show('Nhập Student ID từ 1 đến 50.', false);
+    return;
+  }
+  const track = 1000 + id;
+  try {
+    await jsonFetch('/audio/test', {
+      method: 'POST', body: new URLSearchParams({track: String(track)}),
+    });
+    show('Đã gửi lệnh phát /mp3/' + String(track).padStart(4, '0') + '.mp3.', true);
+    setTimeout(refreshAudio, 500);
+  } catch (error) {
+    show(error.message, false);
+  }
+}
+
+refresh();
+refreshAudio();
+</script>
+</body>
+</html>
